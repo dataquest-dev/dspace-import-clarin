@@ -9,14 +9,14 @@ from dspace_rest_client import client  # noqa
 ANONYM_EMAIL = True
 
 # HTTP retry configuration
-HTTP_MAX_RETRIES = 3  # Reduced from 5 for faster failure detection
-HTTP_RETRY_DELAY = 1  # Reduced from 2 seconds
-HTTP_RETRY_BACKOFF = 1.5  # Reduced backoff for faster retries
-HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]  # Retryable HTTP status codes
+HTTP_MAX_RETRIES = 3
+HTTP_RETRY_DELAY = 1  # seconds
+HTTP_RETRY_BACKOFF = 1.5
+HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
 
 # Circuit breaker for persistent errors
-HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # Reduced threshold for faster circuit opening
-HTTP_CIRCUIT_BREAKER_TIMEOUT = 60  # Reduced timeout to 1 minute
+HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
+HTTP_CIRCUIT_BREAKER_TIMEOUT = 60  # seconds before retry
 
 
 def ascii(s, default="unknown"):
