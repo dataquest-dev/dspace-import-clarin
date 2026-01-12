@@ -65,7 +65,7 @@ class rest:
         self._get_cnt = 0
         self._post_cnt = 0
 
-        # Circuit breaker state
+        # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
         self._consecutive_500_errors = 0
         self._circuit_breaker_open_time = None
 
@@ -545,7 +545,7 @@ class rest:
     def _post_with_retry(self, url: str, data, param, item_index: int, total_items: int):
         """POST with retry logic for handling temporary server errors"""
 
-        # Check circuit breaker
+        # Check if circuit breaker is blocking requests due to consecutive errors
         if self._is_circuit_breaker_open():
             _logger.warning(
                 f"Circuit breaker open - skipping request to [{url}] (too many consecutive 500 errors)")
@@ -553,7 +553,7 @@ class rest:
 
         ascii_data = ascii(data)
         if ANONYM_EMAIL:
-            # poor man's anonymize
+            # Truncate data containing email addresses for privacy in logs
             if "@" in ascii_data or "email" in ascii_data:
                 ascii_data = ascii_data[:5]
         if len(ascii_data) > 80:
