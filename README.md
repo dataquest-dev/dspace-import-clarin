@@ -58,6 +58,29 @@ Run `scripts/start.local.dspace.db.bat` or use `scripts/init.dspacedb5.sh` direc
 ***
 11. Update `project_settings.py`
 
+## Configuration Options
+
+### Ignore Settings
+Configure items to skip during migration in the `"ignore"` section of `project_settings.py`:
+
+- **Missing license icons**: Add license labels to `"missing-icons"` array to ignore missing icon files during license import
+  ```python
+  "missing-icons": ["Inf", "OSI", "ND"]
+  ```
+
+- **Empty persons**: Add person IDs to `"epersons"` array to ignore empty/invalid person records
+  ```python  
+  "epersons": [
+      # ignore - empty person
+      198
+  ]
+  ```
+
+- **Metadata fields**: Add field names to `"fields"` array to ignore specific metadata fields during import
+  ```python
+  "fields": ['local.bitstream.file', 'local.bitstream.redirectToURL']
+  ```
+
 12. Make sure that handle prefixes are configured in the backend configuration (`dspace.cfg`):
    - Set your main handle prefix in `handle.prefix`
    - Add all other handle prefixes to `handle.additional.prefixes`
@@ -94,6 +117,21 @@ Add the following to your `project_settings.py`:
 13. Import: Run command `cd ./src && python repo_import.py`
 - **NOTE:** database must be up to date (`dspace database migrate force` must be called in the `dspace/bin`)
 - **NOTE:** dspace server must be running
+
+## Database Connection Improvements
+
+For long-running imports, the system includes automatic connection management:
+
+- **Connection reliability**: TCP keepalive prevents timeouts, automatic reconnection on failures
+- **Large dataset handling**: Tables >100k rows processed in 50k row chunks to prevent memory issues  
+- **Retry logic**: All operations retry up to 3 times with exponential backoff
+
+### Configuration
+
+Database settings in `src/pump/_db_config.py`:
+- `DB_CHUNK_SIZE = 50000` - Rows per chunk for large tables
+- `DB_MAX_RETRIES = 3` - Retry attempts on failure
+- `DB_CONNECT_TIMEOUT = 30` - Connection timeout in seconds
 
 ## !!!Migration Notes:!!!
 - The values of table attributes that describe the last modification time of DSpace objects (for example attribute `last_modified` in table `Item`) have a value that represents the time when that object was migrated and not the value from the migrated database dump.
