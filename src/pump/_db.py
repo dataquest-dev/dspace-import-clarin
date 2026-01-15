@@ -285,6 +285,12 @@ class db:
                 
                 self._exponential_backoff_sleep(attempt)
 
+    def exe_sql_params(self, sql: str, params=None):
+        """Execute SQL with parameters to prevent SQL injection."""
+        with self._conn as cursor:
+            cursor.execute(sql, params or {})
+            return
+
     # =============
 
     def delete_resource_policy(self):
