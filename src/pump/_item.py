@@ -340,7 +340,7 @@ class items:
                 resp = dspace.put_item(params, data)
                 if resp is None:
                     _logger.error(
-                        f'put_item: [{i_id}] failed - server returned None (likely HTTP 500 errors)')
+                        f'put_item: [{i_id}] failed - server returned None (detailed error logged above by REST client)')
                 else:
                     self._id2uuid[str(i_id)] = resp['id']
                     self._imported["items"] += 1
@@ -472,6 +472,103 @@ class items:
         else:
             return None
 
+    def iter_protocol_variants(self, handle: str):
+        """Yield alternative protocol variants of a handle (http <-> https)."""
+        if handle.startswith("https://"):
+            yield handle.replace("https://", "http://", 1)
+        elif handle.startswith("http://"):
+            yield handle.replace("http://", "https://", 1)
+
+    def _normalize_version_date(self, version_date_issued: str, item_uuid: str):
+        """
+        Normalize and validate version date string to YYYY-MM-DD format.
+        Returns normalized date in YYYY-MM-DD format if valid or None if invalid (error is logged)
+        """
+        if FULL_DATE_PATTERN.match(version_date_issued):
+            # Validate semantic correctness (valid month/day values)
+            if self._is_valid_date(version_date_issued, '%Y-%m-%d'):
+                return version_date_issued
+            else:
+                _logger.error(
+                    f"Invalid date values for item UUID {item_uuid}: '{version_date_issued}'. "
+                    "Date has invalid month or day values. Skipping version import."
+                )
+                return None
+
+        elif YEAR_MONTH_PATTERN.match(version_date_issued):
+            # Extract year and month for explicit validation
+            year, month = version_date_issued.split('-')
+            try:
+                month_int = int(month)
+                if not (1 <= month_int <= 12):
+                    _logger.error(
+                        f"Invalid month in date for item UUID {item_uuid}: '{version_date_issued}'. "
+                        f"Month '{month}' must be 01-12. Skipping version import."
+                    )
+                    return None
+
+                # Double-check with datetime validation for robustness
+                if not self._is_valid_date(version_date_issued, '%Y-%m'):
+                    _logger.error(
+                        f"Invalid date values for item UUID {item_uuid}: '{version_date_issued}'. "
+                        "Date validation failed. Skipping version import."
+                    )
+                    return None
+
+                # YYYY-MM → YYYY-MM-01
+                normalized_date = f"{version_date_issued}-01"
+                _logger.info(
+                    f"Date for item UUID {item_uuid} only had year-month '{version_date_issued}'. "
+                    f"Normalized to {normalized_date}."
+                )
+                return normalized_date
+            except ValueError:
+                _logger.error(
+                    f"Invalid month format for item UUID {item_uuid}: '{version_date_issued}'. "
+                    "Month must be numeric. Skipping version import."
+                )
+                return None
+
+        elif YEAR_PATTERN.match(version_date_issued):
+            # Year validation - check for reasonable year range (e.g., 1000-9999)
+            try:
+                year_int = int(version_date_issued)
+                if not (1000 <= year_int <= 9999):
+                    _logger.error(
+                        f"Invalid year in date for item UUID {item_uuid}: '{version_date_issued}'. "
+                        "Year must be between 1000 and 9999. Skipping version import."
+                    )
+                    return None
+                # YYYY → YYYY-01-01
+                normalized_date = f"{version_date_issued}-01-01"
+                _logger.info(
+                    f"Date for item UUID {item_uuid} only had year '{version_date_issued}'. "
+                    f"Normalized to {normalized_date}."
+                )
+                return normalized_date
+            except ValueError:
+                _logger.error(
+                    f"Invalid year format for item UUID {item_uuid}: '{version_date_issued}'. "
+                    "Year must be numeric. Skipping version import."
+                )
+                return None
+
+        else:
+            # Try to parse date formats like "15 Mar. 1993" or "26 Jan. 1990"
+            parsed_date = self._parse_day_month_year_format(version_date_issued)
+            if parsed_date:
+                _logger.info(
+                    f"Date for item UUID {item_uuid} was in format '{version_date_issued}'. "
+                    f"Normalized to {parsed_date}."
+                )
+                return parsed_date
+            else:
+                _logger.error(
+                    f"Invalid date format for item UUID {item_uuid}: '{version_date_issued}'. "
+                    "Expected YYYY, YYYY-MM, YYYY-MM-DD, or 'D[D] MMM YYYY' format. Skipping version import."
+                )
+                return None
+
     def _migrate_versions(self, env, db7, db5_dspace, metadatas):
         _logger.info(
             f"Migrating versions [{len(self._id2item or {})}], "
@@ -523,18 +620,12 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
 
                 # If handle not found, try with different protocol (http vs https)
                 if i_handle_d is None:
-                    if i_handle.startswith('https://'):
-                        alternative_handle = i_handle.replace('https://', 'http://')
+                    for alternative_handle in self.iter_protocol_variants(i_handle):
                         i_handle_d = metadatas.versions.get(alternative_handle, None)
                         if i_handle_d is not None:
                             _logger.debug(
-                                f"Found handle data using http protocol: {alternative_handle}")
-                    elif i_handle.startswith('http://'):
-                        alternative_handle = i_handle.replace('http://', 'https://')
-                        i_handle_d = metadatas.versions.get(alternative_handle, None)
-                        if i_handle_d is not None:
-                            _logger.debug(
-                                f"Found handle data using https protocol: {alternative_handle}")
+                                f"Found handle data using alternative protocol: {alternative_handle}")
+                            break
 
                 # If the item is withdrawn the new version could be stored in our repo or in another. Do import that version
                 # only if the item is stored in our repo.
@@ -611,88 +702,10 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                 # Strip whitespace that might be present in database fields
                 version_date_issued = version_date_issued.strip()
 
-                if FULL_DATE_PATTERN.match(version_date_issued):
-                    # Validate semantic correctness (valid month/day values)
-                    if self._is_valid_date(version_date_issued, '%Y-%m-%d'):
-                        normalized_date = version_date_issued
-                    else:
-                        _logger.error(
-                            f"Invalid date values for item UUID {item_uuid}: '{version_date_issued}'. "
-                            "Date has invalid month or day values. Skipping version import."
-                        )
-                        continue
-
-                elif YEAR_MONTH_PATTERN.match(version_date_issued):
-                    # Extract year and month for explicit validation
-                    year, month = version_date_issued.split('-')
-                    try:
-                        month_int = int(month)
-                        if not (1 <= month_int <= 12):
-                            _logger.error(
-                                f"Invalid month in date for item UUID {item_uuid}: '{version_date_issued}'. "
-                                f"Month '{month}' must be 01-12. Skipping version import."
-                            )
-                            continue
-
-                        # Double-check with datetime validation for robustness
-                        if not self._is_valid_date(version_date_issued, '%Y-%m'):
-                            _logger.error(
-                                f"Invalid date values for item UUID {item_uuid}: '{version_date_issued}'. "
-                                "Date validation failed. Skipping version import."
-                            )
-                            continue
-
-                        # YYYY-MM → YYYY-MM-01
-                        normalized_date = f"{version_date_issued}-01"
-                        _logger.info(
-                            f"Date for item UUID {item_uuid} only had year-month '{version_date_issued}'. "
-                            f"Normalized to {normalized_date}."
-                        )
-                    except ValueError:
-                        _logger.error(
-                            f"Invalid month format for item UUID {item_uuid}: '{version_date_issued}'. "
-                            "Month must be numeric. Skipping version import."
-                        )
-                        continue
-
-                elif YEAR_PATTERN.match(version_date_issued):
-                    # Year validation - check for reasonable year range (e.g., 1000-9999)
-                    try:
-                        year_int = int(version_date_issued)
-                        if not (1000 <= year_int <= 9999):
-                            _logger.error(
-                                f"Invalid year in date for item UUID {item_uuid}: '{version_date_issued}'. "
-                                "Year must be between 1000 and 9999. Skipping version import."
-                            )
-                            continue
-                        # YYYY → YYYY-01-01
-                        normalized_date = f"{version_date_issued}-01-01"
-                        _logger.info(
-                            f"Date for item UUID {item_uuid} only had year '{version_date_issued}'. "
-                            f"Normalized to {normalized_date}."
-                        )
-                    except ValueError:
-                        _logger.error(
-                            f"Invalid year format for item UUID {item_uuid}: '{version_date_issued}'. "
-                            "Year must be numeric. Skipping version import."
-                        )
-                        continue
-
-                else:
-                    # Try to parse date formats like "15 Mar. 1993" or "26 Jan. 1990"
-                    parsed_date = self._parse_day_month_year_format(version_date_issued)
-                    if parsed_date:
-                        normalized_date = parsed_date
-                        _logger.info(
-                            f"Date for item UUID {item_uuid} was in format '{version_date_issued}'. "
-                            f"Normalized to {normalized_date}."
-                        )
-                    else:
-                        _logger.error(
-                            f"Invalid date format for item UUID {item_uuid}: '{version_date_issued}'. "
-                            "Expected YYYY, YYYY-MM, YYYY-MM-DD, or 'D[D] MMM YYYY' format. Skipping version import."
-                        )
-                        continue
+                # Normalize and validate the date
+                normalized_date = self._normalize_version_date(version_date_issued, item_uuid)
+                if normalized_date is None:
+                    continue  # Error already logged in _normalize_version_date
 
                 # Use parameterized query to prevent SQL injection (primary security measure),
                 # regardless of input validation. normalized_date is also validated by regex patterns and datetime.strptime().
@@ -762,14 +775,10 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
             # Check if handle exists in versions, try both http and https protocols
             handle_data = metadatas.versions.get(cur_item_version, None)
             if handle_data is None:
-                if cur_item_version.startswith('https://'):
-                    # Try with http instead
-                    alternative_handle = cur_item_version.replace('https://', 'http://')
+                for alternative_handle in self.iter_protocol_variants(cur_item_version):
                     handle_data = metadatas.versions.get(alternative_handle, None)
-                elif cur_item_version.startswith('http://'):
-                    # Try with https instead
-                    alternative_handle = cur_item_version.replace('http://', 'https://')
-                    handle_data = metadatas.versions.get(alternative_handle, None)
+                    if handle_data is not None:
+                        break
 
             if handle_data is None:
                 # Check if current item is withdrawn
