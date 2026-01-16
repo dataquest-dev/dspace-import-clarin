@@ -72,18 +72,16 @@ class db:
 
             return res[0]
 
-    def exe_sql(self, sql_text: str):
+    def exe_sql(self, sql_text: str, params=None):
         with self._conn as cursor:
-            sql_lines = [x.strip()
-                         for x in (sql_text or "").splitlines() if x.strip()]
-            for sql in sql_lines:
-                cursor.execute(sql)
-            return
-
-    def exe_sql_params(self, sql: str, params=None):
-        """Execute SQL with parameters to prevent SQL injection."""
-        with self._conn as cursor:
-            cursor.execute(sql, params or {})
+            if params is not None:
+                # Execute SQL with parameters to prevent SQL injection
+                cursor.execute(sql_text, params)
+            else:
+                sql_lines = [x.strip()
+                             for x in (sql_text or "").splitlines() if x.strip()]
+                for sql in sql_lines:
+                    cursor.execute(sql)
             return
 
     # =============

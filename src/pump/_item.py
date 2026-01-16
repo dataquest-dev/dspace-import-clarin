@@ -724,7 +724,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                     'item_id': item_uuid
                 }
                 
-                db7.exe_sql_params(sql, params)
+                db7.exe_sql(sql, params)
                 # Update sequence
                 db7.exe_sql(f"SELECT setval('versionitem_seq', {versionitem_new_id})")
                 versionitem_new_id += 1
