@@ -285,8 +285,6 @@ class db:
                 
                 self._exponential_backoff_sleep(attempt)
 
-    # =============
-
     def delete_resource_policy(self):
         with self._conn as cursor:
             expected = self.fetch_one("SELECT COUNT(*) from public.resourcepolicy")

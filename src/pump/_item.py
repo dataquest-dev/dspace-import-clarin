@@ -1,7 +1,17 @@
 import logging
+from datetime import datetime
 from ._utils import read_json, serialize, deserialize, time_method, progress_bar, log_before_import, log_after_import
 
 _logger = logging.getLogger("pump.item")
+
+# Format (strptime format, suffix to append, description)
+DATE_FORMATS = [
+    ('%Y-%m-%d', None, 'YYYY-MM-DD'),     # 2024-01-15
+    ('%Y-%m', '-01', 'YYYY-MM'),          # 2024-01 → 2024-01-01
+    ('%Y', '-01-01', 'YYYY'),             # 2024 → 2024-01-01
+    ('%d %b. %Y', None, 'DD MMM. YYYY'),  # 15 Jan. 2024
+    ('%d %b %Y', None, 'DD MMM YYYY'),    # 15 Jan 2024
+]
 
 
 class items:
@@ -329,8 +339,12 @@ class items:
 
             try:
                 resp = dspace.put_item(params, data)
-                self._id2uuid[str(i_id)] = resp['id']
-                self._imported["items"] += 1
+                if resp is None:
+                    _logger.error(
+                        f'put_item: [{i_id}] failed - server returned None (detailed error logged above by REST client)')
+                else:
+                    self._id2uuid[str(i_id)] = resp['id']
+                    self._imported["items"] += 1
             except Exception as e:
                 _logger.error(f'put_item: [{i_id}] failed [{str(e)}]')
 
@@ -409,6 +423,61 @@ class items:
         self._versions = data["versions"]
         self._migrated_versions = data.get("migrated_versions", [])
 
+    def iter_protocol_variants(self, handle: str):
+        """Yield alternative protocol variants of a handle (http <-> https)."""
+        if handle.startswith("https://"):
+            yield handle.replace("https://", "http://", 1)
+        elif handle.startswith("http://"):
+            yield handle.replace("http://", "https://", 1)
+
+    def _normalize_version_date(self, version_date_issued: str, item_uuid: str):
+        """
+        Normalize and validate version date string to YYYY-MM-DD format.
+        Returns normalized date in YYYY-MM-DD format if valid or None if invalid (error is logged)
+        """
+        for date_format, suffix, format_desc in DATE_FORMATS:
+            try:
+                # Parse and validate the date using strptime
+                parsed_date = datetime.strptime(version_date_issued, date_format)
+                
+                # Check year is in reasonable range (1000-9999)
+                if not (1000 <= parsed_date.year <= 9999):
+                    _logger.error(
+                        f"Invalid year for item UUID {item_uuid}: '{version_date_issued}'. "
+                        "Year must be between 1000 and 9999. Skipping version import."
+                    )
+                    return None
+                
+                # Convert to YYYY-MM-DD format
+                if suffix:
+                    # For incomplete dates (YYYY or YYYY-MM), append the suffix
+                    normalized_date = version_date_issued + suffix
+                    _logger.info(
+                        f"Date for item UUID {item_uuid} was '{version_date_issued}' ({format_desc}). "
+                        f"Normalized to {normalized_date}."
+                    )
+                else:
+                    # Convert parsed date to YYYY-MM-DD format
+                    normalized_date = parsed_date.strftime('%Y-%m-%d')
+                    if normalized_date != version_date_issued:
+                        _logger.info(
+                            f"Date for item UUID {item_uuid} was '{version_date_issued}' ({format_desc}). "
+                            f"Normalized to {normalized_date}."
+                        )
+                
+                return normalized_date
+                
+            except ValueError:
+                continue
+        
+        # No format matched
+        format_list = ', '.join([desc for _, _, desc in DATE_FORMATS])
+        _logger.error(
+            f"Invalid date format for item UUID {item_uuid}: '{version_date_issued}'. "
+            f"Expected one of: {format_list}. Skipping version import."
+        )
+        return None
+
     def _migrate_versions(self, env, db7, db5_dspace, metadatas):
         _logger.info(
             f"Migrating versions [{len(self._id2item or {})}], "
@@ -457,6 +526,15 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
             for index, i_handle in enumerate(versions, 1):
                 # Get the handle of the x.th version of the Item
                 i_handle_d = metadatas.versions.get(i_handle, None)
+
+                # If handle not found, try with different protocol (http vs https)
+                if i_handle_d is None:
+                    for alternative_handle in self.iter_protocol_variants(i_handle):
+                        i_handle_d = metadatas.versions.get(alternative_handle, None)
+                        if i_handle_d is not None:
+                            _logger.debug(
+                                f"Found handle data using alternative protocol: {alternative_handle}")
+                            break
 
                 # If the item is withdrawn the new version could be stored in our repo or in another. Do import that version
                 # only if the item is stored in our repo.
@@ -530,12 +608,32 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                         f"No version date found for item UUID {item_uuid} in any of the configured fields: {date_fields_to_try}. Skipping version import for this item.")
                     continue
 
-                version_date_sql = f"TO_TIMESTAMP('{version_date_issued}', 'YYYY-MM-DD')"
+                # Strip whitespace that might be present in database fields
+                version_date_issued = version_date_issued.strip()
 
-                db7.exe_sql(f"INSERT INTO public.versionitem(versionitem_id, version_number, version_date, "
-                            f"version_summary, versionhistory_id, eperson_id, item_id) VALUES "
-                            f"({versionitem_new_id}, {index}, {version_date_sql}, "
-                            f"'', {versionhistory_new_id}, '{admin_uuid}', '{item_uuid}');")
+                # Normalize and validate the date
+                normalized_date = self._normalize_version_date(version_date_issued, item_uuid)
+                if normalized_date is None:
+                    continue  # Error already logged in _normalize_version_date
+
+                # Use parameterized query to prevent SQL injection (primary security measure),
+                # regardless of input validation. normalized_date is also validated by datetime.strptime().
+                sql = """INSERT INTO public.versionitem(versionitem_id, version_number, version_date,
+                                                 version_summary, versionhistory_id, eperson_id, item_id) VALUES 
+                                                 (%(versionitem_id)s, %(version_number)s, TO_TIMESTAMP(%(version_date)s, 'YYYY-MM-DD'), 
+                                                 %(version_summary)s, %(versionhistory_id)s, %(eperson_id)s, %(item_id)s)"""
+                
+                params = {
+                    'versionitem_id': versionitem_new_id,
+                    'version_number': index,
+                    'version_date': normalized_date,
+                    'version_summary': '',
+                    'versionhistory_id': versionhistory_new_id,
+                    'eperson_id': admin_uuid,
+                    'item_id': item_uuid
+                }
+                
+                db7.exe_sql(sql, params)
                 # Update sequence
                 db7.exe_sql(f"SELECT setval('versionitem_seq', {versionitem_new_id})")
                 versionitem_new_id += 1
@@ -583,7 +681,15 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
             visited.add(cur_item_version)
             versions.append(cur_item_version)
 
-            if cur_item_version not in metadatas.versions:
+            # Check if handle exists in versions, try both http and https protocols
+            handle_data = metadatas.versions.get(cur_item_version, None)
+            if handle_data is None:
+                for alternative_handle in self.iter_protocol_variants(cur_item_version):
+                    handle_data = metadatas.versions.get(alternative_handle, None)
+                    if handle_data is not None:
+                        break
+
+            if handle_data is None:
                 # Check if current item is withdrawn
                 cur_item = self._id2item.get(str(cur_item_id))
                 if cur_item['withdrawn']:
@@ -595,7 +701,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                     self._versions["not_imported"].append(cur_item_version)
                 break
 
-            next_item_id = metadatas.versions[cur_item_version]['item_id']
+            next_item_id = handle_data['item_id']
             next_item_version = _get_version(next_item_id)
             if next_item_version in visited:
                 versions.append(next_item_version)
