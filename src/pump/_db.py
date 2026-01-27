@@ -267,8 +267,10 @@ class db:
                    Positional parameters (tuple/list) are not supported.
 
         Behavior:
-            - With params: Executes single parameterized statement only
-            - Without params: Can execute multiple statements (split by newlines)
+            - With params: Performs a single cursor.execute(sql_text, params) call. If sql_text
+              contains multiple statements, execution behavior is determined by the database/driver.
+            - Without params: Splits sql_text into non-empty lines and executes each line as a
+              separate statement.
         """
         max_retries = DB_MAX_RETRIES
 
