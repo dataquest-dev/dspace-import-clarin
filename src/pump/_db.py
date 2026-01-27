@@ -103,7 +103,6 @@ class db:
     def fetch_all(self, sql: str, col_names: list = None, chunk_size: int = None):
         """Fetch all results with optional chunking and retry logic"""
         max_retries = DB_MAX_RETRIES
-        retry_delay = DB_RETRY_BASE_DELAY
 
         for attempt in range(max_retries):
             try:
@@ -122,11 +121,11 @@ class db:
                     _logger.warning(
                         f"Database operation failed after {max_retries} attempts: {e}")
                     raise
-                
+
                 # Reconnect immediately if it's a connection-related error
                 if "connection" in str(e).lower() or "abort" in str(e).lower():
                     self._conn.reconnect()
-                
+
                 self._exponential_backoff_sleep(attempt)
 
     def _fetch_all_simple(self, sql: str, col_names: list = None):
@@ -188,45 +187,47 @@ class db:
         Fall back to subquery for complex queries.
         """
         import re
-        
+
         sql_clean = sql.strip()
         sql_upper = sql_clean.upper()
-        
+
         # Only optimize simple SELECT queries without complex clauses
         if not sql_upper.startswith('SELECT'):
             return f"SELECT COUNT(*) FROM ({sql}) AS count_query"
-            
+
         # Skip optimization for complex queries
         complex_keywords = ['UNION', 'GROUP BY', 'HAVING', 'DISTINCT', 'CTE', 'WITH']
         if any(keyword in sql_upper for keyword in complex_keywords):
             return f"SELECT COUNT(*) FROM ({sql}) AS count_query"
-        
+
         # Try to extract table name from simple SELECT queries
         # Pattern: SELECT ... FROM table_name [WHERE ...] [ORDER BY ...]
-        from_match = re.search(r'\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)', sql_upper)
-        
+        from_match = re.search(
+            r'\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)', sql_upper)
+
         if from_match:
             table_name = from_match.group(1)
-            
+
             # Check if there's a WHERE clause to preserve
-            where_match = re.search(r'\bWHERE\b(.*)(?:\bORDER\s+BY\b|\bLIMIT\b|\bOFFSET\b|$)', sql_upper)
-            
+            where_match = re.search(
+                r'\bWHERE\b(.*)(?:\bORDER\s+BY\b|\bLIMIT\b|\bOFFSET\b|$)', sql_upper)
+
             if where_match:
                 where_clause = where_match.group(1).strip()
                 # Remove ORDER BY, LIMIT, OFFSET from WHERE clause if they got captured
-                where_clause = re.sub(r'\b(ORDER\s+BY|LIMIT|OFFSET)\b.*$', '', where_clause).strip()
+                where_clause = re.sub(
+                    r'\b(ORDER\s+BY|LIMIT|OFFSET)\b.*$', '', where_clause).strip()
                 if where_clause:
                     return f"SELECT COUNT(*) FROM {table_name} WHERE {where_clause}"
-            
+
             # Simple table query without WHERE
             return f"SELECT COUNT(*) FROM {table_name}"
-        
+
         # Fall back to subquery if we can't parse the table name
         return f"SELECT COUNT(*) FROM ({sql}) AS count_query"
 
     def fetch_one(self, sql: str):
         max_retries = DB_MAX_RETRIES
-        retry_delay = DB_RETRY_BASE_DELAY
 
         for attempt in range(max_retries):
             try:
@@ -248,16 +249,15 @@ class db:
                     _logger.warning(
                         f"Database operation failed after {max_retries} attempts: {e}")
                     raise
-                
+
                 # Reconnect immediately if it's a connection-related error
                 if "connection" in str(e).lower() or "abort" in str(e).lower():
                     self._conn.reconnect()
-                
+
                 self._exponential_backoff_sleep(attempt)
 
-    def exe_sql(self, sql_text: str):
+    def exe_sql(self, sql_text: str, params: dict = None):
         max_retries = DB_MAX_RETRIES
-        retry_delay = DB_RETRY_BASE_DELAY
 
         for attempt in range(max_retries):
             try:
@@ -267,10 +267,15 @@ class db:
                     self._conn.reconnect()
 
                 with self._conn as cursor:
-                    sql_lines = [x.strip()
-                                 for x in (sql_text or "").splitlines() if x.strip()]
-                    for sql in sql_lines:
-                        cursor.execute(sql)
+                    if params is not None:
+                        # Execute parameterized query (single statement)
+                        cursor.execute(sql_text, params)
+                    else:
+                        # Execute multiple statements (original behavior)
+                        sql_lines = [x.strip()
+                                     for x in (sql_text or "").splitlines() if x.strip()]
+                        for sql in sql_lines:
+                            cursor.execute(sql)
                 return
 
             except Exception as e:
@@ -278,11 +283,11 @@ class db:
                     f"Database exe_sql failed (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt == max_retries - 1:
                     raise
-                
+
                 # Reconnect immediately if it's a connection-related error
                 if "connection" in str(e).lower() or "abort" in str(e).lower():
                     self._conn.reconnect()
-                
+
                 self._exponential_backoff_sleep(attempt)
 
     def delete_resource_policy(self):
@@ -686,7 +691,8 @@ class differ:
                     _logger.debug(f"{progress} Completed validation of {table_name}")
 
                 except Exception as e:
-                    _logger.error(f"{progress} [FAILED] Validation failed for {table_name}: {e}")
+                    _logger.error(
+                        f"{progress} [FAILED] Validation failed for {table_name}: {e}")
                     continue
 
         _logger.info(f"Validation complete: {current_validation} tables processed")
