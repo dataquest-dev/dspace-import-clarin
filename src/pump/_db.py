@@ -4,6 +4,7 @@ import logging
 import time
 
 from ._db_config import *
+from typing import Optional
 
 _logger = logging.getLogger("pump.db")
 
@@ -256,7 +257,29 @@ class db:
 
                 self._exponential_backoff_sleep(attempt)
 
-    def exe_sql(self, sql_text: str, params: dict = None):
+    def exe_sql(self, sql_text: str, params: Optional[dict] = None):
+        """Execute SQL statement(s) with optional parameters.
+
+        Args:
+            sql_text: SQL to execute
+            params: Optional parameters for parameterized query
+
+        Behavior:
+            - With params: Executes single parameterized statement only
+            - Without params: Can execute multiple statements (split by newlines)
+
+        Raises:
+            ValueError: If params provided but sql_text contains multiple statements
+        """
+        # Validate that parameterized queries only contain single statements
+        if params is not None:
+            sql_lines = [x.strip() for x in (sql_text or "").splitlines() if x.strip()]
+            if len(sql_lines) > 1:
+                raise ValueError(
+                    "Parameterized queries must contain only a single SQL statement. "
+                    f"Found {len(sql_lines)} statements. Use separate calls for multiple statements."
+                )
+
         max_retries = DB_MAX_RETRIES
 
         for attempt in range(max_retries):
