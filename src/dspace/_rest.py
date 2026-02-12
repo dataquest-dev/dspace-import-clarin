@@ -4,7 +4,7 @@ import time
 from ._http import response_to_json
 
 _logger = logging.getLogger("dspace.rest")
-from dspace_rest_client import client  # noqa
+from dspace_rest_client import client, models  # noqa
 
 ANONYM_EMAIL = True
 
@@ -57,6 +57,7 @@ class rest:
         Mostly uses attribute d which represents (slightly modified) dspace_client from
         original python rest api by dspace developers
     """
+    models = models
 
     def __init__(self, endpoint: str, user: str, password: str, auth: bool = True):
         _logger.info(f"Initialise connection to DSpace REST backend [{endpoint}]")
