@@ -99,6 +99,16 @@ class rest:
 
     # =======
 
+    def _safe_close_response(self, r):
+        """Safely close an HTTP response object to free memory.
+        
+        Helper method to avoid code duplication and ensure consistent cleanup.
+        """
+        if r is not None and hasattr(r, 'close'):
+            r.close()
+
+    # =======
+
     def push_acceptable(self, arr: list):
         self._acceptable_resp.append(arr)
 
@@ -314,9 +324,12 @@ class rest:
         url = f'core/items/{uuid}'
         _logger.debug(f"Fetching [{uuid}] using [{url}]")
         r = self.get(url)
-        if not r.ok:
-            raise Exception(r)
-        return response_to_json(r)
+        try:
+            if not r.ok:
+                raise Exception(r)
+            return response_to_json(r)
+        finally:
+            self._safe_close_response(r)
 
     # =======
 
@@ -355,17 +368,23 @@ class rest:
         url = 'clarin/import/logo/community'
         _logger.debug(f"Importing [][{param}] using [{url}]")
         r = self.post(url, params=param, data=None)
-        if not r.ok:
-            raise Exception(r)
-        return response_to_json(r)
+        try:
+            if not r.ok:
+                raise Exception(r)
+            return response_to_json(r)
+        finally:
+            self._safe_close_response(r)
 
     def put_col_logo(self, param: dict):
         url = 'clarin/import/logo/collection'
         _logger.debug(f"Importing [][{param}] using [{url}]")
         r = self.post(url, params=param, data=None)
-        if not r.ok:
-            raise Exception(r)
-        return response_to_json(r)
+        try:
+            if not r.ok:
+                raise Exception(r)
+            return response_to_json(r)
+        finally:
+            self._safe_close_response(r)
 
     # =======
 
@@ -492,9 +511,12 @@ class rest:
         """
         url = f'discover/search/objects?sort=score,DESC&size={size}&page={page}&configuration=default&dsoType={item_type}&embed=thumbnail&embed=item%2Fthumbnail'
         r = self.get(url)
-        if not r.ok:
-            raise Exception(r)
-        return response_to_json(r)
+        try:
+            if not r.ok:
+                raise Exception(r)
+            return response_to_json(r)
+        finally:
+            self._safe_close_response(r)
 
     # =======
 
@@ -506,9 +528,7 @@ class rest:
 
             if r.status_code == 200:
                 # 200 OK - success!
-                if key is None:
-                    return js
-                return js[key]
+                return js if key is None else js[key]
 
             if re_auth and r.status_code == 401:
                 # 401 Unauthorized
@@ -526,7 +546,10 @@ class rest:
                 except Exception:
                     pass
             _logger.error(f'GET [{url}] failed. Exception: [{str(e)}] [{detail}]')
-        return None
+            return None
+        finally:
+            # Close response to free memory
+            self._safe_close_response(r)
 
     def _put(self, url: str, arr: list, params: list = None):
         return len(list(self._iput(url, arr, params)))
@@ -543,7 +566,11 @@ class rest:
         _logger.debug(f"Imported [{url}] successfully")
 
     def _post_with_retry(self, url: str, data, param, item_index: int, total_items: int):
-        """POST with retry logic for handling temporary server errors"""
+        """POST with retry logic for handling temporary server errors
+        
+        Memory optimization: Explicitly closes HTTP response objects to prevent
+        memory accumulation during large imports (e.g., 70K+ items).
+        """
 
         # Check if circuit breaker is blocking requests due to consecutive errors
         if self._is_circuit_breaker_open():
@@ -561,6 +588,7 @@ class rest:
 
         last_exception = None
         last_response = None
+        r = None  # Initialize outside loop for safety
 
         for attempt in range(HTTP_MAX_RETRIES):
             try:
@@ -569,40 +597,44 @@ class rest:
                 if r.ok:
                     # Success - reset circuit breaker and return parsed response
                     self._handle_circuit_breaker(r.status_code)
-                    try:
-                        js = None
-                        if len(r.content or '') > 0:
-                            js = response_to_json(r)
-                        if attempt > 0:
-                            _logger.debug(
-                                f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
-                        return js
-                    except Exception:
-                        return r
+                    js = None
+                    if len(r.content or '') > 0:
+                        js = response_to_json(r)
+                    if attempt > 0:
+                        _logger.debug(
+                            f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
+                    # Close response before returning
+                    self._safe_close_response(r)
+                    return js
 
                 # Handle HTTP errors
                 elif r.status_code in HTTP_RETRYABLE_CODES:
+                    status_code = r.status_code  # Store before closing
                     last_response = r
-                    self._handle_circuit_breaker(r.status_code)
+                    self._handle_circuit_breaker(status_code)
                     retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
 
                     if attempt == HTTP_MAX_RETRIES - 1:
                         # Last attempt - no retry will happen
                         _logger.warning(
-                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
+                            f"POST [{url}] HTTP {status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
                     elif attempt == 0:
                         # First attempt - log with retry info
                         _logger.warning(
-                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - retrying in {retry_delay}s")
+                            f"POST [{url}] HTTP {status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - retrying in {retry_delay}s")
                     else:
                         _logger.debug(
-                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES})")
+                            f"POST [{url}] HTTP {status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES})")
 
                     if attempt < HTTP_MAX_RETRIES - 1:
+                        # Close response before retry to free memory
+                        self._safe_close_response(r)
+                        r = None
+
                         time.sleep(retry_delay)
 
                         # Re-authenticate on certain errors
-                        if r.status_code in [401, 403]:
+                        if status_code in [401, 403]:
                             _logger.debug("Re-authenticating due to auth error")
                             if not self.client.authenticate():
                                 _logger.warning("Re-authentication failed")
@@ -613,6 +645,8 @@ class rest:
                     last_response = r
                     _logger.error(
                         f"[FAILED] POST [{url}] failed with non-retryable HTTP {r.status_code} for [{ascii_data}]: {r.text}")
+                    # Close response after logging error
+                    self._safe_close_response(r)
                     return None
 
             except Exception as e:
@@ -626,11 +660,15 @@ class rest:
                     _logger.debug(
                         f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
 
+                # Close response on exception before retry
+                self._safe_close_response(r)
+                r = None
+
                 if attempt < HTTP_MAX_RETRIES - 1:
                     time.sleep(retry_delay)
                     continue
 
-        # All retries exhausted
+        # All retries exhausted - clean up last_response
         msg_r = ""
         try:
             msg_r = str(last_response) if last_response else ""
@@ -646,6 +684,8 @@ class rest:
                 error_detail = f"HTTP {status_code}: {error_text}"
             else:
                 error_detail = f"HTTP {status_code}: No response text"
+            # Close last_response after logging
+            self._safe_close_response(last_response)
         else:
             error_detail = sanitize_log_content(
                 str(last_exception) if last_exception else "Unknown error")
