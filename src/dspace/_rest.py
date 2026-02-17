@@ -99,6 +99,16 @@ class rest:
 
     # =======
 
+    def _safe_close_response(self, r):
+        """Safely close an HTTP response object to free memory.
+        
+        Helper method to avoid code duplication and ensure consistent cleanup.
+        """
+        if r is not None and hasattr(r, 'close'):
+            r.close()
+
+    # =======
+
     def push_acceptable(self, arr: list):
         self._acceptable_resp.append(arr)
 
@@ -319,8 +329,7 @@ class rest:
                 raise Exception(r)
             return response_to_json(r)
         finally:
-            if r is not None and hasattr(r, 'close'):
-                r.close()
+            self._safe_close_response(r)
 
     # =======
 
@@ -364,8 +373,7 @@ class rest:
                 raise Exception(r)
             return response_to_json(r)
         finally:
-            if r is not None and hasattr(r, 'close'):
-                r.close()
+            self._safe_close_response(r)
 
     def put_col_logo(self, param: dict):
         url = 'clarin/import/logo/collection'
@@ -376,8 +384,7 @@ class rest:
                 raise Exception(r)
             return response_to_json(r)
         finally:
-            if r is not None and hasattr(r, 'close'):
-                r.close()
+            self._safe_close_response(r)
 
     # =======
 
@@ -509,8 +516,7 @@ class rest:
                 raise Exception(r)
             return response_to_json(r)
         finally:
-            if r is not None and hasattr(r, 'close'):
-                r.close()
+            self._safe_close_response(r)
 
     # =======
 
@@ -544,8 +550,7 @@ class rest:
             return None
         finally:
             # Close response to free memory
-            if r is not None and hasattr(r, 'close'):
-                r.close()
+            self._safe_close_response(r)
 
     def _put(self, url: str, arr: list, params: list = None):
         return len(list(self._iput(url, arr, params)))
@@ -584,9 +589,9 @@ class rest:
 
         last_exception = None
         last_response = None
+        r = None  # Initialize outside loop for safety
 
         for attempt in range(HTTP_MAX_RETRIES):
-            r = None
             try:
                 r = self.post(url, params=param, data=data)
 
@@ -600,8 +605,7 @@ class rest:
                         _logger.debug(
                             f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
                     # Close response before returning
-                    if r is not None and hasattr(r, 'close'):
-                        r.close()
+                    self._safe_close_response(r)
                     return js
 
                 # Handle HTTP errors
@@ -624,17 +628,14 @@ class rest:
                             f"POST [{url}] HTTP {status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES})")
 
                     if attempt < HTTP_MAX_RETRIES - 1:
-                        # Re-authenticate on certain errors before closing response
-                        should_reauth = status_code in [401, 403]
-                        
                         # Close response before retry to free memory
-                        if r is not None and hasattr(r, 'close'):
-                            r.close()
-                            r = None
+                        self._safe_close_response(r)
+                        r = None
                         
                         time.sleep(retry_delay)
 
-                        if should_reauth:
+                        # Re-authenticate on certain errors
+                        if status_code in [401, 403]:
                             _logger.debug("Re-authenticating due to auth error")
                             if not self.client.authenticate():
                                 _logger.warning("Re-authentication failed")
@@ -646,8 +647,7 @@ class rest:
                     _logger.error(
                         f"[FAILED] POST [{url}] failed with non-retryable HTTP {r.status_code} for [{ascii_data}]: {r.text}")
                     # Close response after logging error
-                    if r is not None and hasattr(r, 'close'):
-                        r.close()
+                    self._safe_close_response(r)
                     return None
 
             except Exception as e:
@@ -662,9 +662,8 @@ class rest:
                         f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
 
                 # Close response on exception before retry
-                if r is not None and hasattr(r, 'close'):
-                    r.close()
-                    r = None
+                self._safe_close_response(r)
+                r = None
 
                 if attempt < HTTP_MAX_RETRIES - 1:
                     time.sleep(retry_delay)
@@ -687,8 +686,7 @@ class rest:
             else:
                 error_detail = f"HTTP {status_code}: No response text"
             # Close last_response after logging
-            if hasattr(last_response, 'close'):
-                last_response.close()
+            self._safe_close_response(last_response)
         else:
             error_detail = sanitize_log_content(
                 str(last_exception) if last_exception else "Unknown error")
