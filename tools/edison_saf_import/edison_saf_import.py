@@ -10,21 +10,53 @@ import subprocess
 import os
 import datetime
 import logging
+import argparse
+import sys
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(
-            f'/tmp/edison_import_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+
+def setup_logging(verbose=False):
+    """Setup logging configuration based on verbosity"""
+    log_filename = f'/tmp/edison_import_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+
+    # Configure logging handlers
+    handlers = [logging.FileHandler(log_filename)]
+
+    if verbose:
+        handlers.append(logging.StreamHandler())
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=handlers,
+        force=True  # Reset any existing configuration
+    )
+
+    return logging.getLogger(__name__), log_filename
+
+
+def show_progress(current, total, collection_name=""):
+    """Display progress bar"""
+    if total == 0:
+        percentage = 0
+    else:
+        percentage = (current / total) * 100
+
+    bar_length = 40
+    filled_length = int(bar_length * current // total) if total > 0 else 0
+    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+
+    status = f"Processing: {collection_name}" if collection_name else "Processing..."
+
+    # Use \r to overwrite the same line
+    sys.stdout.write(f"\r[{bar}] {percentage:.1f}% ({current}/{total}) - {status}")
+    sys.stdout.flush()
+
 
 # Error tracking
 error_messages = []
+
+# Global logger (will be initialized in main)
+logger = None
 
 # Hardcoded Configuration
 BASE_EXPORT_PATH = "/opt/edison_exports"
@@ -202,41 +234,83 @@ def cleanup_container():
 
 def main():
     """Main execution function"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Edison SAF Import to DSpace')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Show log messages on screen (default: log to file only)')
+    args = parser.parse_args()
+
+    # Setup logging based on verbosity
+    global logger
+    logger, log_filename = setup_logging(args.verbose)
+
+    if not args.verbose:
+        print(f"Edison SAF Import starting... Logs saved to: {log_filename}")
+        print("Use -v or --verbose to see detailed output on screen.\n")
+
     logger.info("[START] Edison SAF Import to DSpace - Starting...")
     logger.info(f"Source: {BASE_EXPORT_PATH}")
     logger.info(f"Container: {CONTAINER_NAME}")
     logger.info(f"Target collections: {list(COLLECTIONS.keys())}")
 
     # Step 1: Copy data to container
+    if not args.verbose:
+        print("Step 1: Copying data to container...")
+
     if not copy_data_to_container():
         logger.error("[ERROR] Failed to copy data. Exiting.")
+        if not args.verbose:
+            print("ERROR: Failed to copy data. Check log file for details.")
         return 1
 
     try:
         # Step 2: Find export directories
+        if not args.verbose:
+            print("Step 2: Finding export directories...")
+
         export_dirs = find_export_directories()
         if not export_dirs:
             logger.error("[ERROR] No export directories found. Exiting.")
+            if not args.verbose:
+                print("ERROR: No export directories found. Check log file for details.")
             return 1
+
+        # Count total collections for progress tracking
+        total_collections = 0
+        all_collections = []
+
+        for export_dir in export_dirs:
+            collections = find_collection_directories(export_dir)
+            total_collections += len(collections)
+            all_collections.extend([(export_dir, col) for col in collections])
+
+        if not args.verbose:
+            print(f"Found {total_collections} collections to process\n")
 
         total_imports = 0
         successful_imports = 0
+        current_progress = 0
 
-        # Step 3: Process each export directory
-        for export_dir in export_dirs:
+        # Step 3: Process each collection with progress tracking
+        for export_dir, (collection_name, collection_path, collection_uuid) in all_collections:
+            current_progress += 1
+
+            if not args.verbose:
+                show_progress(current_progress, total_collections, collection_name)
+
             logger.info(f"\n{'='*60}")
             logger.info(f"Processing export: {os.path.basename(export_dir)}")
+            logger.info(f"Processing collection: {collection_name}")
             logger.info(f"{'='*60}")
 
-            collections = find_collection_directories(export_dir)
+            total_imports += 1
+            result = run_dspace_import(collection_name, collection_path, collection_uuid)
+            if result and result.returncode == 0:
+                successful_imports += 1
 
-            # Step 4: Import each collection
-            for collection_name, collection_path, collection_uuid in collections:
-                total_imports += 1
-                result = run_dspace_import(
-                    collection_name, collection_path, collection_uuid)
-                if result and result.returncode == 0:
-                    successful_imports += 1
+        # Clear progress line and show completion
+        if not args.verbose:
+            print("\n\nImport process completed!\n")
 
         # Print final summary
         logger.info(f"\n{'='*60}")
@@ -246,25 +320,48 @@ def main():
         logger.info(f"Successful imports: {successful_imports}")
         logger.info(f"Failed imports: {total_imports - successful_imports}")
 
+        # Show summary on screen for non-verbose mode
+        if not args.verbose:
+            print("=" * 50)
+            print("FINAL SUMMARY")
+            print("=" * 50)
+            print(f"Total imports attempted: {total_imports}")
+            print(f"Successful imports: {successful_imports}")
+            print(f"Failed imports: {total_imports - successful_imports}")
+
         # Add error messages summary
         if error_messages:
             logger.error(f"Error messages ({len(error_messages)} errors):")
             for i, error in enumerate(error_messages, 1):
                 logger.error(f"  {i}. {error}")
 
+            if not args.verbose:
+                print(
+                    f"\nErrors encountered: {len(error_messages)} (see log file for details)")
+
         if successful_imports == total_imports:
             logger.info("[SUCCESS] All imports completed successfully!")
+            if not args.verbose:
+                print("\n✓ All imports completed successfully!")
         elif successful_imports > 0:
             logger.warning(
                 "[WARNING] Some imports completed successfully, but there were failures")
+            if not args.verbose:
+                print("\n⚠ Some imports completed successfully, but there were failures")
         else:
             logger.error("[ERROR] All imports failed")
+            if not args.verbose:
+                print("\n✗ All imports failed")
 
     finally:
         # Step 5: Always cleanup
+        if not args.verbose:
+            print("\nCleaning up...")
         cleanup_container()
 
     logger.info("\n[FINISHED] Edison SAF Import completed.")
+    if not args.verbose:
+        print(f"\nProcess completed. Full logs available at: {log_filename}")
     return 0
 
 
