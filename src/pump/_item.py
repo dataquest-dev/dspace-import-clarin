@@ -439,7 +439,7 @@ class items:
             try:
                 # Parse and validate the date using strptime
                 parsed_date = datetime.strptime(version_date_issued, date_format)
-                
+
                 # Check year is in reasonable range (1000-9999)
                 if not (1000 <= parsed_date.year <= 9999):
                     _logger.error(
@@ -447,7 +447,7 @@ class items:
                         "Year must be between 1000 and 9999. Skipping version import."
                     )
                     return None
-                
+
                 # Convert to YYYY-MM-DD format
                 if suffix:
                     # For incomplete dates (YYYY or YYYY-MM), append the suffix
@@ -464,12 +464,12 @@ class items:
                             f"Date for item UUID {item_uuid} was '{version_date_issued}' ({format_desc}). "
                             f"Normalized to {normalized_date}."
                         )
-                
+
                 return normalized_date
-                
+
             except ValueError:
                 continue
-        
+
         # No format matched
         format_list = ', '.join([desc for _, _, desc in DATE_FORMATS])
         _logger.error(
@@ -511,7 +511,7 @@ class items:
 
             _logger.debug(f'Processing all versions for the item with ID: {item_id}')
 
-            # All versions of this Item is going to be processed
+            # All versions of this Item are going to be processed
             # Insert data into `versionhistory` table
             versionhistory_new_id = db7.get_last_id(
                 'versionhistory', 'versionhistory_id') + 1
@@ -612,7 +612,8 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                 version_date_issued = version_date_issued.strip()
 
                 # Normalize and validate the date
-                normalized_date = self._normalize_version_date(version_date_issued, item_uuid)
+                normalized_date = self._normalize_version_date(
+                    version_date_issued, item_uuid)
                 if normalized_date is None:
                     continue  # Error already logged in _normalize_version_date
 
@@ -622,7 +623,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                                                  version_summary, versionhistory_id, eperson_id, item_id) VALUES 
                                                  (%(versionitem_id)s, %(version_number)s, TO_TIMESTAMP(%(version_date)s, 'YYYY-MM-DD'), 
                                                  %(version_summary)s, %(versionhistory_id)s, %(eperson_id)s, %(item_id)s)"""
-                
+
                 params = {
                     'versionitem_id': versionitem_new_id,
                     'version_number': index,
@@ -632,7 +633,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                     'eperson_id': admin_uuid,
                     'item_id': item_uuid
                 }
-                
+
                 db7.exe_sql(sql, params)
                 # Update sequence
                 db7.exe_sql(f"SELECT setval('versionitem_seq', {versionitem_new_id})")
@@ -724,7 +725,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
         # Previous versions are in wrong order - reverse the list
         previous_versions = previous_versions[::-1]
 
-        # If this item does not have any version return a None
+        # If this item does not have any version return None
         if not newer_versions and not previous_versions:
             return None
 

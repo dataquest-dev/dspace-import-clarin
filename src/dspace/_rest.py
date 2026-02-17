@@ -109,7 +109,7 @@ class rest:
 
     def clarin_put_handles(self, handle_arr: list):
         """
-            Import handles which have not objects into database.
+            Import handles which have no objects into database.
             Other handles are imported by dspace objects.
             Mapped table: handles
         """
@@ -137,7 +137,7 @@ class rest:
 
     def fetch_metadata_schemas(self):
         """
-            Gel all existing data from table metadataschemaregistry.
+            Get all existing data from table metadataschemaregistry.
         """
         url = 'core/metadataschemas'
         arr = self._fetch(url, self.get_many, None)
@@ -162,7 +162,7 @@ class rest:
 
     def fetch_schema(self, object_id):
         """
-            Gel all existing data from table metadataschemaregistry.
+            Get all existing data from table metadataschemaregistry.
         """
         url = 'core/metadataschemas'
         return self._fetch(url, self.get_one, None, object_id=object_id)
@@ -207,7 +207,7 @@ class rest:
 
     def put_collection_submitter(self, col_id: int):
         url = f'core/collections/{col_id}/submittersGroup'
-        _logger.debug(f"Adding editor group to [{col_id}] using [{url}]")
+        _logger.debug(f"Adding submitter group to [{col_id}] using [{url}]")
         return list(self._iput(url, [{}], [{}]))[0]
 
     def put_collection_bitstream_read_group(self, col_id: int):

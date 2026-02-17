@@ -485,7 +485,7 @@ class metadatas:
                 self._schemas_id2id_v5[str(meta_id)] = existing['id']
                 continue
 
-            # only prefix exists, but there is unique constraint on prefix in the databse
+            # only prefix exists, but there is unique constraint on prefix in the database
             existing = find_existing_prefix(schema['short_id'])
             if existing is not None:
                 _logger.warning(
