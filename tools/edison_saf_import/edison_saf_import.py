@@ -9,11 +9,28 @@ runs DSpace SAF import for each collection, and cleans up afterwards.
 import subprocess
 import os
 import datetime
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(
+            f'/tmp/edison_import_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Error tracking
+error_messages = []
 
 # Hardcoded Configuration
 BASE_EXPORT_PATH = "/opt/edison_exports"
 CONTAINER_NAME = "dspace8563"  # adjust if needed
 CONTAINER_BASE_PATH = "/tmp/edison_exports"
+MAPFILE_SAVE_PATH = "/tmp/mapfiles"  # mounted folder to save mapfiles
 
 EPERSON = "dspace.admin.dev@dataquest.sk"
 
@@ -25,8 +42,8 @@ COLLECTIONS = {
 
 def run_command(command, description=""):
     """Run a command and return the result"""
-    print(f"\n[RUNNING] {description}")
-    print(f"Command: {command}")
+    logger.info(f"[RUNNING] {description}")
+    logger.info(f"Command: {command}")
 
     try:
         result = subprocess.run(
@@ -37,44 +54,52 @@ def run_command(command, description=""):
             timeout=300  # 5 minute timeout
         )
 
-        print(f"Return code: {result.returncode}")
+        logger.info(f"Return code: {result.returncode}")
         if result.stdout:
-            print(f"STDOUT:\n{result.stdout}")
+            logger.info(f"STDOUT:\n{result.stdout}")
         if result.stderr:
-            print(f"STDERR:\n{result.stderr}")
+            logger.warning(f"STDERR:\n{result.stderr}")
+            if result.returncode != 0:
+                error_msg = f"{description} failed: {result.stderr}"
+                error_messages.append(error_msg)
 
         return result
     except subprocess.TimeoutExpired:
-        print("[ERROR] Command timed out after 5 minutes")
+        error_msg = f"{description} timed out after 5 minutes"
+        logger.error("[ERROR] Command timed out after 5 minutes")
+        error_messages.append(error_msg)
         return None
     except Exception as e:
-        print(f"[ERROR] Error running command: {e}")
-        return None
+        error_msg = f"{description} failed: {str(e)}"
+        logger.error(f"[ERROR] Error running command: {e}")
+        error_messages.append(error_msg)
 
 
 def copy_data_to_container():
     """Copy Edison exports into the container"""
-    print("\n[COPY] Copying Edison exports to container...")
+    logger.info("\n[COPY] Copying Edison exports to container...")
 
     # First ensure the base path doesn't exist in container
     cleanup_cmd = f"docker exec {CONTAINER_NAME} rm -rf {CONTAINER_BASE_PATH}"
     run_command(cleanup_cmd, "Cleaning up any existing data in container")
 
     # Copy data into container
-    copy_cmd = f"docker cp {BASE_EXPORT_PATH} {CONTAINER_NAME}:{CONTAINER_BASE_PATH}/"
+    copy_cmd = f"docker cp {BASE_EXPORT_PATH} {CONTAINER_NAME}:{os.path.dirname(CONTAINER_BASE_PATH)}/"
     result = run_command(copy_cmd, "Copying data to container")
 
     if result and result.returncode == 0:
-        print("[SUCCESS] Data copied to container")
+        logger.info("[SUCCESS] Data copied to container")
         return True
     else:
-        print("[ERROR] Failed to copy data to container")
+        error_msg = "Failed to copy data to container"
+        logger.error(f"[ERROR] {error_msg}")
+        error_messages.append(error_msg)
         return False
 
 
 def find_export_directories():
     """Find export directories inside the container"""
-    print("\n[SEARCH] Finding export directories in container...")
+    logger.info("\n[SEARCH] Finding export directories in container...")
 
     # List contents of the exports directory inside container
     list_cmd = f"docker exec {CONTAINER_NAME} find {CONTAINER_BASE_PATH} -maxdepth 1 -type d -name 'data_theses_*' -o -name 'data_dissertations_*'"
@@ -83,18 +108,20 @@ def find_export_directories():
     if result and result.returncode == 0 and result.stdout:
         directories = [line.strip()
                        for line in result.stdout.strip().split('\n') if line.strip()]
-        print(f"Found {len(directories)} export directories:")
+        logger.info(f"Found {len(directories)} export directories:")
         for dir_name in directories:
-            print(f"  - {dir_name}")
+            logger.info(f"  - {dir_name}")
         return directories
     else:
-        print("[ERROR] No export directories found or error occurred")
+        error_msg = "No export directories found or error occurred"
+        logger.error(f"[ERROR] {error_msg}")
+        error_messages.append(error_msg)
         return []
 
 
 def find_collection_directories(export_dir):
     """Find collection directories within an export directory"""
-    print(f"\n[SEARCH] Finding collections in {export_dir}")
+    logger.info(f"\n[SEARCH] Finding collections in {export_dir}")
 
     list_cmd = f"docker exec {CONTAINER_NAME} find {export_dir} -maxdepth 1 -type d"
     result = run_command(list_cmd, f"Listing contents of {export_dir}")
@@ -111,25 +138,32 @@ def find_collection_directories(export_dir):
             dir_name = os.path.basename(full_path)
             if dir_name in COLLECTIONS:
                 valid_collections.append((dir_name, full_path, COLLECTIONS[dir_name]))
-                print(f"  [FOUND] Collection: {dir_name} -> {COLLECTIONS[dir_name]}")
+                logger.info(
+                    f"  [FOUND] Collection: {dir_name} -> {COLLECTIONS[dir_name]}")
             else:
-                print(f"  [SKIP] Unknown collection: {dir_name}")
+                logger.info(f"  [SKIP] Unknown collection: {dir_name}")
 
         return valid_collections
     else:
-        print(f"[ERROR] Could not list contents of {export_dir}")
+        error_msg = f"Could not list contents of {export_dir}"
+        logger.error(f"[ERROR] {error_msg}")
+        error_messages.append(error_msg)
         return []
 
 
 def run_dspace_import(collection_name, collection_path, collection_uuid):
     """Run DSpace SAF import for a collection"""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    mapfile_path = f"/tmp/mapfile_{collection_name}_{timestamp}.txt"
+    mapfile_path = f"{MAPFILE_SAVE_PATH}/mapfile_{collection_name}_{timestamp}.txt"
 
-    print(f"\n[IMPORT] Importing collection: {collection_name}")
-    print(f"  Collection UUID: {collection_uuid}")
-    print(f"  Source path: {collection_path}")
-    print(f"  Mapfile: {mapfile_path}")
+    logger.info(f"\n[IMPORT] Importing collection: {collection_name}")
+    logger.info(f"  Collection UUID: {collection_uuid}")
+    logger.info(f"  Source path: {collection_path}")
+    logger.info(f"  Mapfile: {mapfile_path}")
+
+    # Ensure mapfile directory exists
+    create_dir_cmd = f"docker exec {CONTAINER_NAME} mkdir -p {MAPFILE_SAVE_PATH}"
+    run_command(create_dir_cmd, "Creating mapfile directory")
 
     import_cmd = f"""docker exec -it {CONTAINER_NAME} \\
   /dspace/bin/dspace import --add \\
@@ -140,51 +174,49 @@ def run_dspace_import(collection_name, collection_path, collection_uuid):
 
     result = run_command(import_cmd, f"DSpace import for {collection_name}")
 
-    print(f"\n[RESULTS] Import Results for {collection_name}:")
-    print(f"  Export: {os.path.basename(os.path.dirname(collection_path))}")
-    print(f"  Collection: {collection_name}")
-    print(f"  Return code: {result.returncode if result else 'N/A'}")
+    logger.info(f"\n[RESULTS] Import Results for {collection_name}:")
+    logger.info(f"  Export: {os.path.basename(os.path.dirname(collection_path))}")
+    logger.info(f"  Collection: {collection_name}")
+    logger.info(f"  Return code: {result.returncode if result else 'N/A'}")
 
     if result and result.returncode == 0:
-        print("  [SUCCESS] Import successful")
+        logger.info("  [SUCCESS] Import successful")
     else:
-        print("  [FAILED] Import failed")
+        error_msg = f"Import failed for collection {collection_name}"
+        logger.error(f"  [FAILED] {error_msg}")
+        error_messages.append(error_msg)
 
     return result
 
 
 def cleanup_container():
-    """Clean up copied data and temporary files from container"""
-    print("\n[CLEANUP] Cleaning up container...")
+    """Clean up copied data from container"""
+    logger.info("\n[CLEANUP] Cleaning up container...")
 
     # Remove the copied data
     cleanup_data_cmd = f"docker exec {CONTAINER_NAME} rm -rf {CONTAINER_BASE_PATH}"
     run_command(cleanup_data_cmd, "Removing copied data from container")
 
-    # Remove any mapfiles
-    cleanup_maps_cmd = f"docker exec {CONTAINER_NAME} bash -c 'rm -f /tmp/mapfile_*.txt'"
-    run_command(cleanup_maps_cmd, "Removing temporary mapfiles")
-
-    print("[SUCCESS] Cleanup complete")
+    logger.info("[SUCCESS] Cleanup complete - mapfiles are saved in mounted folder")
 
 
 def main():
     """Main execution function"""
-    print("[START] Edison SAF Import to DSpace - Starting...")
-    print(f"Source: {BASE_EXPORT_PATH}")
-    print(f"Container: {CONTAINER_NAME}")
-    print(f"Target collections: {list(COLLECTIONS.keys())}")
+    logger.info("[START] Edison SAF Import to DSpace - Starting...")
+    logger.info(f"Source: {BASE_EXPORT_PATH}")
+    logger.info(f"Container: {CONTAINER_NAME}")
+    logger.info(f"Target collections: {list(COLLECTIONS.keys())}")
 
     # Step 1: Copy data to container
     if not copy_data_to_container():
-        print("[ERROR] Failed to copy data. Exiting.")
+        logger.error("[ERROR] Failed to copy data. Exiting.")
         return 1
 
     try:
         # Step 2: Find export directories
         export_dirs = find_export_directories()
         if not export_dirs:
-            print("[ERROR] No export directories found. Exiting.")
+            logger.error("[ERROR] No export directories found. Exiting.")
             return 1
 
         total_imports = 0
@@ -192,9 +224,9 @@ def main():
 
         # Step 3: Process each export directory
         for export_dir in export_dirs:
-            print(f"\n{'='*60}")
-            print(f"Processing export: {os.path.basename(export_dir)}")
-            print(f"{'='*60}")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Processing export: {os.path.basename(export_dir)}")
+            logger.info(f"{'='*60}")
 
             collections = find_collection_directories(export_dir)
 
@@ -207,25 +239,32 @@ def main():
                     successful_imports += 1
 
         # Print final summary
-        print(f"\n{'='*60}")
-        print("[SUMMARY] FINAL SUMMARY")
-        print(f"{'='*60}")
-        print(f"Total imports attempted: {total_imports}")
-        print(f"Successful imports: {successful_imports}")
-        print(f"Failed imports: {total_imports - successful_imports}")
+        logger.info(f"\n{'='*60}")
+        logger.info("[SUMMARY] FINAL SUMMARY")
+        logger.info(f"{'='*60}")
+        logger.info(f"Total imports attempted: {total_imports}")
+        logger.info(f"Successful imports: {successful_imports}")
+        logger.info(f"Failed imports: {total_imports - successful_imports}")
+
+        # Add error messages summary
+        if error_messages:
+            logger.error(f"Error messages ({len(error_messages)} errors):")
+            for i, error in enumerate(error_messages, 1):
+                logger.error(f"  {i}. {error}")
 
         if successful_imports == total_imports:
-            print("[SUCCESS] All imports completed successfully!")
+            logger.info("[SUCCESS] All imports completed successfully!")
         elif successful_imports > 0:
-            print("[WARNING] Some imports completed successfully, but there were failures")
+            logger.warning(
+                "[WARNING] Some imports completed successfully, but there were failures")
         else:
-            print("[ERROR] All imports failed")
+            logger.error("[ERROR] All imports failed")
 
     finally:
         # Step 5: Always cleanup
         cleanup_container()
 
-    print("\n[FINISHED] Edison SAF Import completed.")
+    logger.info("\n[FINISHED] Edison SAF Import completed.")
     return 0
 
 
