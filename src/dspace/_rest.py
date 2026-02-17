@@ -528,8 +528,7 @@ class rest:
 
             if r.status_code == 200:
                 # 200 OK - success!
-                result = js if key is None else js[key]
-                return result
+                return js if key is None else js[key]
 
             if re_auth and r.status_code == 401:
                 # 401 Unauthorized
@@ -631,7 +630,7 @@ class rest:
                         # Close response before retry to free memory
                         self._safe_close_response(r)
                         r = None
-                        
+
                         time.sleep(retry_delay)
 
                         # Re-authenticate on certain errors
