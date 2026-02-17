@@ -593,20 +593,16 @@ class rest:
                 if r.ok:
                     # Success - reset circuit breaker and return parsed response
                     self._handle_circuit_breaker(r.status_code)
-                    try:
-                        js = None
-                        if len(r.content or '') > 0:
-                            js = response_to_json(r)
-                        if attempt > 0:
-                            _logger.debug(
-                                f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
-                        return js
-                    except Exception:
-                        return r
-                    finally:
-                        # Close response to free memory after successful processing
-                        if r is not None and hasattr(r, 'close'):
-                            r.close()
+                    js = None
+                    if len(r.content or '') > 0:
+                        js = response_to_json(r)
+                    if attempt > 0:
+                        _logger.debug(
+                            f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
+                    # Close response before returning
+                    if r is not None and hasattr(r, 'close'):
+                        r.close()
+                    return js
 
                 # Handle HTTP errors
                 elif r.status_code in HTTP_RETRYABLE_CODES:
@@ -644,9 +640,6 @@ class rest:
                                 _logger.warning("Re-authentication failed")
                                 break
                         continue
-                    else:
-                        # Last retry failed - keep response for error reporting
-                        pass
                 else:
                     # Non-retryable error
                     last_response = r
