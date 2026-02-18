@@ -11,12 +11,11 @@ import os
 import datetime
 import logging
 import argparse
+import platform
 import sys
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 
 
 def setup_logging(verbose=False):
@@ -57,7 +56,7 @@ def show_progress(current, total, collection_name=""):
     sys.stdout.flush()
 
 
-def send_email(log_filename, total_imports, successful_imports, error_count, recipients=None, sender=None):
+def send_email(log_filename, total_imports, successful_imports, error_count, error_messages=None, recipients=None, sender=None):
     """Send email with import summary and log file attachment"""
     if recipients is None:
         recipients = DEFAULT_RECIPIENTS
@@ -72,7 +71,7 @@ def send_email(log_filename, total_imports, successful_imports, error_count, rec
         msg['To'] = ", ".join(recipients)
         msg['Subject'] = f"Edison SAF Import Report - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
-        # Create email body
+# Create email body with error details only
         status = "SUCCESS" if error_count == 0 else "COMPLETED WITH ERRORS" if successful_imports > 0 else "FAILED"
 
         body = f"""Edison SAF Import Report
@@ -90,27 +89,29 @@ Summary:
 Container: {CONTAINER_NAME}
 Source: {BASE_EXPORT_PATH}
 Target collections: {list(COLLECTIONS.keys())}
-
-Detailed logs are attached to this email.
-
----
-This is an automated report from Edison SAF Import script.
 """
 
+        # Add error details if there are any errors
+        if error_count > 0 and error_messages:
+            body += f"\n{'='*50}\nERROR DETAILS:\n{'='*50}\n"
+            for i, error in enumerate(error_messages, 1):
+                body += f"{i}. {error}\n"
+
+        # Add log file location
+        body += f"\n{'='*50}\nDETAILED LOGS LOCATION:\n{'='*50}\n"
+        body += f"Full log file: {log_filename}\n"
+        try:
+            if hasattr(os, 'uname'):
+                server_name = os.uname().nodename
+            else:
+                server_name = platform.node()
+        except Exception:
+            server_name = "current server"
+        body += f"Server: {server_name}\n"
+
+        body += "\n---\nThis is an automated report from Edison SAF Import script."
+
         msg.attach(MIMEText(body, 'plain'))
-
-        # Attach log file
-        if os.path.exists(log_filename):
-            with open(log_filename, "rb") as attachment:
-                part = MIMEBase('application', 'octet-stream')
-                part.set_payload(attachment.read())
-
-            encoders.encode_base64(part)
-            part.add_header(
-                'Content-Disposition',
-                f'attachment; filename= {os.path.basename(log_filename)}'
-            )
-            msg.attach(part)
 
         # Send email
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
@@ -487,7 +488,7 @@ def main():
         recipients = args.email_to if args.email_to else DEFAULT_RECIPIENTS
         sender = args.email_from if args.email_from else DEFAULT_SENDER
         email_sent = send_email(log_filename, total_imports, successful_imports, len(
-            error_messages), recipients, sender)
+            error_messages), error_messages, recipients, sender)
 
         if email_sent:
             if not args.verbose:
