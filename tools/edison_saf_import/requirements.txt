@@ -1,0 +1,16 @@
+# Edison SAF Import Dependencies
+
+# External dependencies
+tqdm>=4.64.0  # Progress bars for long-running operations
+
+# Standard library modules used:
+# - subprocess
+# - os  
+# - datetime
+# - logging
+# - argparse
+# - platform
+# - smtplib
+# - email.mime.multipart
+# - email.mime.text
+# - typing
