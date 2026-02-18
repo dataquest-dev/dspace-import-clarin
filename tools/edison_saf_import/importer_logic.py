@@ -75,23 +75,34 @@ class EdisonImporter:
         self.logger = logger or logging.getLogger(__name__)
         self.error_messages: List[str] = []
 
-    def run_command(self, command: str, description: str = "") -> Optional[subprocess.CompletedProcess]:
-        """Execute a shell command with proper error handling.
+    def validate_docker_name(self, name: str) -> str:
+        """Validate Docker container or image name."""
+        import re
+        if not re.match(r'^[a-zA-Z0-9_.-]+$', name):
+            raise ValueError(f"Invalid Docker name: {name}")
+        return name
 
-        Args:
-            command: Shell command to execute
-            description: Description of the command for logging
+    def validate_path(self, path: str) -> str:
+        """Validate a file or directory path (basic check)."""
+        import re
+        if not re.match(r'^[\w\-/.:]+$', path):
+            raise ValueError(f"Invalid path: {path}")
+        return path
 
-        Returns:
-            CompletedProcess result or None if timeout/error
-        """
+    def validate_uuid(self, uuid: str) -> str:
+        import re
+        if not re.match(r'^[a-fA-F0-9-]{36}$', uuid):
+            raise ValueError(f"Invalid UUID: {uuid}")
+        return uuid
+
+    def run_command(self, command: list, description: str = "") -> Optional[subprocess.CompletedProcess]:
+        """Execute a command (argument list) with proper error handling."""
         self.logger.info(f"[RUNNING] {description}")
-        self.logger.info(f"Command: {command}")
+        self.logger.info(f"Command: {' '.join(command)}")
 
         try:
             result = subprocess.run(
                 command,
-                shell=True,
                 capture_output=True,
                 text=True,
                 timeout=config.COMMAND_TIMEOUT,
@@ -129,12 +140,19 @@ class EdisonImporter:
         """
         self.logger.info("\n[COPY] Copying Edison exports to container...")
 
+        # Validate inputs
+        container = self.validate_docker_name(config.CONTAINER_NAME)
+        base_export = self.validate_path(config.BASE_EXPORT_PATH)
+        container_base = self.validate_path(config.CONTAINER_BASE_PATH)
+        container_base_dir = self.validate_path(
+            os.path.dirname(config.CONTAINER_BASE_PATH))
+
         # Clean up any existing data
-        cleanup_cmd = f"docker exec {config.CONTAINER_NAME} rm -rf {config.CONTAINER_BASE_PATH}"
+        cleanup_cmd = ["docker", "exec", container, "rm", "-rf", container_base]
         self.run_command(cleanup_cmd, "Cleaning up any existing data in container")
 
         # Copy data into container
-        copy_cmd = f"docker cp {config.BASE_EXPORT_PATH} {config.CONTAINER_NAME}:{os.path.dirname(config.CONTAINER_BASE_PATH)}/"
+        copy_cmd = ["docker", "cp", base_export, f"{container}:{container_base_dir}/"]
         result = self.run_command(copy_cmd, "Copying data to container")
 
         if result and result.returncode == 0:
@@ -154,15 +172,16 @@ class EdisonImporter:
         """
         self.logger.info("\n[SEARCH] Finding export directories in container...")
 
+        container = self.validate_docker_name(config.CONTAINER_NAME)
+        container_base = self.validate_path(config.CONTAINER_BASE_PATH)
         # Build the find command with all patterns from config.EXPORT_DIR_PATTERNS
-        pattern_args = ' '.join(f"-name '{pat}'" for pat in config.EXPORT_DIR_PATTERNS)
-        # Join patterns with -o (OR)
-        pattern_expr = ' -o '.join(
-            [f"-name '{pat}'" for pat in config.EXPORT_DIR_PATTERNS])
-        list_cmd = (
-            f"docker exec {config.CONTAINER_NAME} find {config.CONTAINER_BASE_PATH} "
-            f"-maxdepth 1 -type d {pattern_expr}"
-        )
+        find_cmd = ["find", container_base, "-maxdepth", "1", "-type", "d"]
+        for pat in config.EXPORT_DIR_PATTERNS:
+            find_cmd.extend(["-o", "-name", pat])
+        # Remove the first "-o" if present
+        if find_cmd[7] == "-o":
+            find_cmd = find_cmd[:7] + find_cmd[8:]
+        list_cmd = ["docker", "exec", container] + find_cmd
         result = self.run_command(list_cmd, "Listing export directories")
 
         if result and result.returncode == 0 and result.stdout:
@@ -189,7 +208,10 @@ class EdisonImporter:
         """
         self.logger.info(f"\n[SEARCH] Finding collections in {export_dir}")
 
-        list_cmd = f"docker exec {config.CONTAINER_NAME} find {export_dir} -maxdepth 1 -type d"
+        container = self.validate_docker_name(config.CONTAINER_NAME)
+        export_dir_valid = self.validate_path(export_dir)
+        list_cmd = ["docker", "exec", container, "find",
+                    export_dir_valid, "-maxdepth", "1", "-type", "d"]
         result = self.run_command(list_cmd, f"Listing contents of {export_dir}")
 
         if result and result.returncode == 0 and result.stdout:
@@ -239,16 +261,25 @@ class EdisonImporter:
         self.logger.info(f"  Source path: {collection_path}")
         self.logger.info(f"  Mapfile: {mapfile_path}")
 
+        container = self.validate_docker_name(config.CONTAINER_NAME)
+        mapfile_dir = self.validate_path(config.MAPFILE_SAVE_PATH)
+        collection_uuid_valid = self.validate_uuid(collection_uuid)
+        collection_path_valid = self.validate_path(collection_path)
+        eperson = config.EPERSON  # Assume validated elsewhere or add validation if needed
+        mapfile_path_valid = self.validate_path(mapfile_path)
+
         # Ensure mapfile directory exists
-        create_dir_cmd = f"docker exec {config.CONTAINER_NAME} mkdir -p {config.MAPFILE_SAVE_PATH}"
+        create_dir_cmd = ["docker", "exec", container, "mkdir", "-p", mapfile_dir]
         self.run_command(create_dir_cmd, "Creating mapfile directory")
 
-        import_cmd = (f"docker exec -it {config.CONTAINER_NAME} "
-                      f"/dspace/bin/dspace import --add "
-                      f"--collection={collection_uuid} "
-                      f"--source={collection_path} "
-                      f"--eperson={config.EPERSON} "
-                      f"--mapfile={mapfile_path}")
+        import_cmd = [
+            "docker", "exec", container,
+            "/dspace/bin/dspace", "import", "--add",
+            f"--collection={collection_uuid_valid}",
+            f"--source={collection_path_valid}",
+            f"--eperson={eperson}",
+            f"--mapfile={mapfile_path_valid}"
+        ]
 
         result = self.run_command(import_cmd, f"DSpace import for {collection_name}")
 
@@ -271,7 +302,9 @@ class EdisonImporter:
         """Clean up copied data from container."""
         self.logger.info("\n[CLEANUP] Cleaning up container...")
 
-        cleanup_data_cmd = f"docker exec {config.CONTAINER_NAME} rm -rf {config.CONTAINER_BASE_PATH}"
+        container = self.validate_docker_name(config.CONTAINER_NAME)
+        container_base = self.validate_path(config.CONTAINER_BASE_PATH)
+        cleanup_data_cmd = ["docker", "exec", container, "rm", "-rf", container_base]
         self.run_command(cleanup_data_cmd, "Removing copied data from container")
 
         self.logger.info(

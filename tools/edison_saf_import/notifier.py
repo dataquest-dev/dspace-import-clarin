@@ -111,8 +111,15 @@ class EmailNotifier:
         sender: Optional[str],
     ) -> MIMEMultipart:
         """Create email message with import summary."""
+
         msg = MIMEMultipart()
-        msg['From'] = sender or f"Edison SAF Import <{recipients[0]}>"
+        default_sender = os.environ.get("EDISON_SAF_IMPORT_SENDER")
+        if sender:
+            msg['From'] = sender
+        elif default_sender:
+            msg['From'] = default_sender
+        else:
+            msg['From'] = "Edison SAF Import <no-reply@localhost>"
         msg['To'] = ", ".join(recipients)
         msg['Subject'] = f"Edison SAF Import Report - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
@@ -202,8 +209,10 @@ Target collections: {collections}
         """Send email via SMTP."""
         with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
             if self.username and self.password:
-                if self.smtp_port in (587, 465):
+                try:
                     server.starttls()
+                except smtplib.SMTPException as exc:
+                    self.logger.warning(
+                        "Failed to start TLS for SMTP connection: %s", exc)
                 server.login(self.username, self.password)
-
             server.sendmail(sender or recipients[0], recipients, msg.as_string())

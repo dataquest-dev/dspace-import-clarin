@@ -70,7 +70,7 @@ Edit `config.py` to customize:
 
 - **Paths**: Export paths, container paths, mapfile locations
 - **Docker**: Container name and configuration
-- **DSpace**: ePerson and collection mappings
+- **DSpace**: EPERSON and collection mappings
 - **Email**: SMTP server settings and default recipients
 - **Timeouts**: Command execution timeouts
 

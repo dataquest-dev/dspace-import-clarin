@@ -172,15 +172,12 @@ def main() -> int:
         logger.info("Use -v or --verbose to see detailed output on screen.\n",
                     extra={'summary': True})
 
-    logger.info("[START] Edison SAF Import to DSpace - Starting...")
-    logger.info(f"Source: {config.BASE_EXPORT_PATH}")
-    logger.info(f"Container: {config.CONTAINER_NAME}")
-    logger.info(f"Target collections: {list(config.COLLECTIONS.keys())}")
-
-    # Initialize importer
-    importer = EdisonImporter(verbose=args.verbose, logger=logger)
-
+    importer = None
+    total_imports = 0
+    successful_imports = 0
+    email_sent = True
     try:
+        importer = EdisonImporter(verbose=args.verbose, logger=logger)
         # Copy data to container
         logger.info("Step 1: Copying data to container...", extra={'summary': True})
 
@@ -227,21 +224,33 @@ def main() -> int:
         else:
             logger.error("[ERROR] All imports failed")
 
+    except Exception as exc:
+        logger.error(f"[FATAL] Unhandled exception: {exc}", exc_info=True)
     finally:
         # Always cleanup
-        logger.info("\nCleaning up...", extra={'summary': True})
-        importer.cleanup_container()
+        if importer is not None:
+            logger.info("\nCleaning up...", extra={'summary': True})
+            importer.cleanup_container()
 
     logger.info("\n[FINISHED] Edison SAF Import completed.")
 
     # Send email report
-    email_sent = send_email_report(
-        args, logger, log_filename, total_imports, successful_imports, importer.error_messages
-    )
+    if importer is not None:
+        email_sent = send_email_report(
+            args, logger, log_filename, total_imports, successful_imports, importer.error_messages
+        )
 
-    email_msg = " Email report sent." if args.email and email_sent else ""
-    logger.info(f"\nProcess completed.{email_msg} Full logs available at: {log_filename}", extra={
-                'summary': True})
+        email_msg = " Email report sent." if args.email and email_sent else ""
+        logger.info(f"\nProcess completed.{email_msg} Full logs available at: {log_filename}", extra={
+                    'summary': True})
+
+    # Return non-zero exit code if all imports failed
+    if total_imports > 0 and successful_imports == 0:
+        return 1
+
+    # Return non-zero exit code if email was requested but failed to send
+    if args.email and not email_sent:
+        return 1
 
     return 0
 

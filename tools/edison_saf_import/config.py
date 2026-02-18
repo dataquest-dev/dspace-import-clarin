@@ -5,6 +5,8 @@ This module contains all configuration constants, collection mappings,
 and environment-dependent variables.
 """
 
+
+import os
 from typing import Dict
 
 # Directory paths
@@ -13,16 +15,22 @@ CONTAINER_NAME = "dspace8563"
 CONTAINER_BASE_PATH = "/tmp/edison_exports"
 MAPFILE_SAVE_PATH = "/tmp/mapfiles"
 
+
 # DSpace configuration
-EPERSON = "dspace.admin.dev@dataquest.sk"
+EPERSON = os.environ.get("EDISON_SAF_IMPORT_EPERSON",
+                         "dspace.admin.dev@dataquest.sk")  # CHANGE THIS for production
 
 # Email configuration
-SMTP_SERVER = "dev-5.pc"
-SMTP_PORT = 25
-SMTP_USERNAME = None
-SMTP_PASSWORD = None
-DEFAULT_SENDER = "dspace.admin.dev@dataquest.sk"
-DEFAULT_RECIPIENTS = ["admin@yourdomain.com"]
+SMTP_SERVER = os.environ.get("EDISON_SAF_IMPORT_SMTP_SERVER",
+                             "dev-5.pc")  # CHANGE THIS for production
+SMTP_PORT = int(os.environ.get("EDISON_SAF_IMPORT_SMTP_PORT", 25))
+SMTP_USERNAME = os.environ.get("EDISON_SAF_IMPORT_SMTP_USERNAME")
+SMTP_PASSWORD = os.environ.get("EDISON_SAF_IMPORT_SMTP_PASSWORD")
+# Sender and recipients should be customized for your deployment!
+DEFAULT_SENDER = os.environ.get(
+    "EDISON_SAF_IMPORT_SENDER", "dspace.admin.dev@dataquest.sk")  # CHANGE THIS for production
+DEFAULT_RECIPIENTS = os.environ.get(
+    "EDISON_SAF_IMPORT_RECIPIENTS", "admin@yourdomain.com").split(",")  # Comma-separated list
 
 
 # Collection mappings: collection_name -> uuid
