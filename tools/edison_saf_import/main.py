@@ -24,7 +24,7 @@ def setup_logging(verbose: bool = False) -> Tuple[logging.Logger, str]:
     Returns:
         Tuple of (logger, log_filename)
     """
-    log_filename = f'/tmp/edison_import_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    log_filename = f'{config.LOG_DIR}/edison_import_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
 
     # Create formatters
     detailed_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')

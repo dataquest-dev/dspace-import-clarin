@@ -12,6 +12,8 @@ from typing import Dict
 # Directory paths
 BASE_EXPORT_PATH = "/opt/edison_exports"
 CONTAINER_NAME = "dspace8563"
+LOG_DIR = os.environ.get("EDISON_SAF_IMPORT_LOG_DIR", "/tmp")
+# !!! NOTE: All files from this folder will be removed before processing, so make sure to only place export folders here !!!
 CONTAINER_BASE_PATH = "/tmp/edison_exports"
 MAPFILE_SAVE_PATH = "/tmp/mapfiles"
 
