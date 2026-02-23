@@ -6,7 +6,7 @@ _logger = logging.getLogger("pump.eperson")
 
 def _emails(email):
     """
-        The eperson email could consist of more emails, return all of them in the array.
+        The eperson email could consist of multiple emails; return all of them in the array.
         If the email doesn't contain `;` that means there is only one email without `;` separator.
     """
     if email is None:
@@ -15,7 +15,7 @@ def _emails(email):
     if ';' not in email:
         return [email]
 
-    # email value contains two emails, take just the first one.
+    # email value consists of two emails; take just the first one.
     # e.g., test@msn.com;name@gmail.com
     return email.split(';')
 
