@@ -5,16 +5,18 @@ import argparse
 import logging
 import gc
 import tracemalloc
+import ctypes
 
 import settings
 import project_settings
 from utils import init_logging, update_settings, exists_key, set_key
 
 _logger = logging.getLogger()
+_mem_logger = logging.getLogger("memory")
 
 # env settings, update with project_settings
 env = update_settings(settings.env, project_settings.settings)
-init_logging(_logger, env["log_file"])
+init_logging(_logger, env["log_file"], env.get("memory_log_file"))
 
 import dspace  # noqa
 import pump  # noqa
@@ -45,6 +47,38 @@ def deserialize(resume: bool, obj, cache_file: str) -> bool:
     return True
 
 
+def _rss_mb() -> float:
+    if os.name != "nt":
+        return -1.0
+    try:
+        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = PROCESS_MEMORY_COUNTERS()
+        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+            handle, ctypes.byref(counters), counters.cb)
+        if not ok:
+            return -1.0
+        if counters.WorkingSetSize <= 0:
+            return -1.0
+        return counters.WorkingSetSize / (1024 * 1024)
+    except Exception:
+        return -1.0
+
+
 def log_checkpoint(label: str, since_ts: float) -> float:
     now = time.perf_counter()
     elapsed = now - since_ts
@@ -58,9 +92,15 @@ def log_checkpoint(label: str, since_ts: float) -> float:
         py_peak_mb = 0.0
 
     gc0, gc1, gc2 = gc.get_count()
+    rss_mb = _rss_mb()
+
     _logger.info(
-        f"[PROFILE] {label} | elapsed={elapsed:.2f}s | "
-        f"py_current={py_current_mb:.1f}MB | py_peak={py_peak_mb:.1f}MB | gc=({gc0},{gc1},{gc2})"
+        f"[PROFILE] {label} | elapsed={elapsed:.2f}s"
+    )
+    rss_text = f"rss={rss_mb:.1f}MB" if rss_mb >= 0 else "rss=n/a"
+    _mem_logger.info(
+        f"[PROFILE_MEM] {label} | elapsed={elapsed:.2f}s | "
+        f"{rss_text} | py_current={py_current_mb:.1f}MB | py_peak={py_peak_mb:.1f}MB | gc=({gc0},{gc1},{gc2})"
     )
     return now
 
@@ -83,10 +123,13 @@ if __name__ == "__main__":
     parser.add_argument('--test',
                         help='Empty table test',
                         required=False, nargs='*', default=[])
+    parser.add_argument('--memory-profile',
+                        help='Enable Python allocation tracing (slower)',
+                        required=False, action='store_true', default=False)
 
     args = parser.parse_args()
     s = time.time()
-    if not tracemalloc.is_tracing():
+    if args.memory_profile and not tracemalloc.is_tracing():
         tracemalloc.start(25)
     checkpoint_ts = time.perf_counter()
     checkpoint_ts = log_checkpoint("startup", checkpoint_ts)

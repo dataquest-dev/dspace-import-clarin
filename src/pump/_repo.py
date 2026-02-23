@@ -1,6 +1,5 @@
 import logging
 import os
-import shutil
 import time
 
 from ._utils import time_method
@@ -42,6 +41,7 @@ def export_table(db, table_name: str, out_f: str):
     logged_step = 100000
     exported = 0
     first = True
+    is_jsonl = out_f.lower().endswith(".jsonl")
 
     progress = None
     if tqdm is not None and total_rows > 0:
@@ -54,7 +54,8 @@ def export_table(db, table_name: str, out_f: str):
         )
 
     with open(out_f, 'w', encoding='utf-8') as fout:
-        fout.write('[')
+        if not is_jsonl:
+            fout.write('[')
         with db._conn as cursor:
             cursor.itersize = chunk_size
             cursor.execute(f'SELECT row_to_json(t)::text FROM "{table_name}" t')
@@ -65,13 +66,17 @@ def export_table(db, table_name: str, out_f: str):
 
                 serialized_rows = [row[0] for row in rows if row and row[0] is not None]
                 if serialized_rows:
-                    chunk_text = ",".join(serialized_rows)
-                    if first:
-                        fout.write(chunk_text)
-                        first = False
+                    if is_jsonl:
+                        fout.write("\n".join(serialized_rows))
+                        fout.write("\n")
                     else:
-                        fout.write(',')
-                        fout.write(chunk_text)
+                        chunk_text = ",".join(serialized_rows)
+                        if first:
+                            fout.write(chunk_text)
+                            first = False
+                        else:
+                            fout.write(',')
+                            fout.write(chunk_text)
 
                 exported += len(serialized_rows)
                 if progress is not None:
@@ -83,7 +88,8 @@ def export_table(db, table_name: str, out_f: str):
                         f"[EXPORT] {table_name}: exported={exported}/{total_rows} rows elapsed={took:.1f}s speed={speed:.0f} rows/s"
                     )
 
-        fout.write(']')
+        if not is_jsonl:
+            fout.write(']')
 
     if progress is not None:
         progress.close()
@@ -104,9 +110,17 @@ class repo:
         self.raw_db_7 = db(env["db_dspace_7"])
 
         if not env["tempdb"]:
-            for path in [env["input"]["tempdbexport_v5"], env["input"]["tempdbexport_v7"]]:
-                if os.path.exists(path):
-                    shutil.rmtree(path)
+            run_id = time.strftime("run_%Y%m%d_%H%M%S") + f"_{os.getpid()}"
+            env["input"]["tempdbexport_v5"] = os.path.join(
+                env["input"]["tempdbexport_v5"], run_id)
+            env["input"]["tempdbexport_v7"] = os.path.join(
+                env["input"]["tempdbexport_v7"], run_id)
+            _logger.info(
+                f"Using temp export dirs v5=[{env['input']['tempdbexport_v5']}] v7=[{env['input']['tempdbexport_v7']}]"
+            )
+
+        export_cache_v5 = {}
+        export_cache_v7 = {}
 
         tables_db_5 = [x for arr in self.raw_db_dspace_5.all_tables() for x in arr]
         tables_utilities_5 = [x for arr in self.raw_db_utilities_5.all_tables()
@@ -123,8 +137,13 @@ class repo:
                 if not os.path.exists(test_json_path):
                     raise FileNotFoundError(f"Test JSON file not found: {test_json_path}")
                 return test_json_path
+            if table_name in export_cache_v5:
+                _logger.info(f"[TABLE] {table_name}: reusing exported file")
+                return export_cache_v5[table_name]
+
             os.makedirs(env["input"]["tempdbexport_v5"], exist_ok=True)
-            out_f = os.path.join(env["input"]["tempdbexport_v5"], f"{table_name}.json")
+            ext = "jsonl" if table_name == "metadatavalue" else "json"
+            out_f = os.path.join(env["input"]["tempdbexport_v5"], f"{table_name}.{ext}")
             if not env["tempdb"]:
                 if table_name in tables_db_5:
                     db = self.raw_db_dspace_5
@@ -133,28 +152,33 @@ class repo:
                 else:
                     _logger.warning(f"Table [{table_name}] not found in db.")
                     raise NotImplementedError(f"Table [{table_name}] not found in db.")
+                _logger.info(f"[TABLE] {table_name}: exporting")
                 export_table(db, table_name, out_f)
+            export_cache_v5[table_name] = out_f
             return out_f
 
         def _f_7(table_name):
             """ Dynamically export the table to json file and return path to it for DSpace 7. """
+            if table_name in export_cache_v7:
+                _logger.info(f"[TABLE] {table_name}@v7: reusing exported file")
+                return export_cache_v7[table_name]
+
             os.makedirs(env["input"]["tempdbexport_v7"], exist_ok=True)
             out_f = os.path.join(env["input"]["tempdbexport_v7"], f"{table_name}.json")
             if not env["tempdb"]:
+                _logger.info(f"[TABLE] {table_name}@v7: exporting")
                 export_table(self.raw_db_7, table_name, out_f)
+            export_cache_v7[table_name] = out_f
             return out_f
 
-        # load groups
         self.groups = groups(
             _f("epersongroup"),
             _f("group2group"),
         )
         self.groups.from_rest(dspace)
 
-        # load handles
         self.handles = handles(_f("handle"))
 
-        # load metadata
         self.metadatas = metadatas(
             env,
             dspace,
@@ -165,16 +189,18 @@ class repo:
             _f("metadataschemaregistry"),
         )
 
-        # load community
         self.communities = communities(
             _f("community"),
             _f("community2community"),
         )
 
+        collection_default_read_groups = self.metadatas.collection_default_read_groups()
+
         self.collections = collections(
             _f("collection"),
             _f("community2collection"),
-            _f("metadatavalue"),
+            None,
+            collection_default_read_groups,
         )
 
         self.registrationdatas = registrationdatas(

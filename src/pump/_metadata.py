@@ -1,10 +1,34 @@
 import logging
 import re
+import json
+import os
+import time
 from typing import Optional
 
 from ._utils import read_json, time_method, serialize, deserialize, progress_bar, log_before_import, log_after_import
 
 _logger = logging.getLogger("pump.metadata")
+
+
+def _iter_jsonl(file_name: str):
+    with open(file_name, mode='r', encoding='utf-8') as fin:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+
+
+def _iter_jsonl_with_progress(file_name: str):
+    total_bytes = os.path.getsize(file_name)
+    read_bytes = 0
+    with open(file_name, mode='rb') as fin:
+        for raw_line in fin:
+            read_bytes += len(raw_line)
+            line = raw_line.decode('utf-8', errors='replace').strip()
+            if not line:
+                continue
+            yield json.loads(line), read_bytes, total_bytes
 
 
 def _metadatavalue_process(repo, v5data: list, v7data: list):
@@ -221,50 +245,101 @@ class metadatas:
             sponsor_field_id = sponsors[0]['metadata_field_id']
 
         # norm
-        js_value = read_json(value_file_v5_str) or []
-        if not js_value:
-            _logger.info(f"Empty input: [{value_file_v5_str}].")
+        started = time.perf_counter()
+        _logger.info("[METADATA] init: start")
+        is_jsonl = value_file_v5_str.lower().endswith(".jsonl")
+        if is_jsonl:
+            values_iter = _iter_jsonl_with_progress(value_file_v5_str)
+            orig_len = 0
+            _logger.info(
+                f"[METADATA] values loading from {value_file_v5_str} (streaming jsonl)")
+        else:
+            js_value = read_json(value_file_v5_str) or []
+            if not js_value:
+                _logger.info(f"Empty input: [{value_file_v5_str}].")
+            values_iter = iter(js_value)
+            orig_len = len(js_value)
+            _logger.info(
+                f"[METADATA] values loading from {value_file_v5_str} ({orig_len} rows)")
 
-        for val in js_value:
+        handle_prefixes = env["dspace"]["handle_prefix"]
+        if isinstance(handle_prefixes, str):
+            handle_prefixes = [handle_prefixes]
+
+        # normalize + filter + build indexes in a single pass to avoid extra large-list copies
+        kept_len = 0
+        progress_every_rows = 100000
+        progress_every_seconds = 8
+        last_progress_ts = started
+        for idx, val in enumerate(values_iter, start=1):
+            bytes_read = 0
+            total_bytes = 0
+            if is_jsonl:
+                val, bytes_read, total_bytes = val
+                orig_len = idx
+            field_id = val['metadata_field_id']
             # replace separator @@ by ;
-            val['text_value'] = val['text_value'].replace("@@", ";")
+            text_value = val['text_value'].replace("@@", ";")
 
             # replace `local.sponsor` data sequence
             # from `<ORG>;<PROJECT_CODE>;<PROJECT_NAME>;<TYPE>`
             # to `<TYPE>;<PROJECT_CODE>;<ORG>;<PROJECT_NAME>`
-            if val['metadata_field_id'] == sponsor_field_id:
-                val['text_value'] = metadatas._fix_local_sponsor(val['text_value'])
+            if field_id == sponsor_field_id:
+                text_value = metadatas._fix_local_sponsor(text_value)
 
-        # ignore file preview in metadata and others
-        orig_len = len(js_value)
-        js_value = [x for x in js_value if x["metadata_field_id"]
-                    not in self.ignored_fields]
-        if orig_len != len(js_value):
-            _logger.warning(
-                f"Ignoring metadata fields [{self.ignored_fields}], len:[{orig_len}->{len(js_value)}]")
+            # ignore file preview in metadata and others
+            if field_id in self.ignored_fields:
+                continue
 
-        # fill values
-        for val in js_value:
+            kept_len += 1
             res_type_id = str(val['resource_type_id'])
             res_id = str(val['resource_id'])
             arr = self._values.setdefault(res_type_id, {}).setdefault(res_id, [])
-            arr.append(val)
-
-        # fill values
-        for val in js_value:
-            # Store item handle and item id connection in dict
-            handle_prefixes = env["dspace"]["handle_prefix"]
-            if isinstance(handle_prefixes, str):
-                handle_prefixes = [handle_prefixes]
-
-            if not any(val['text_value'].startswith(prefix) for prefix in handle_prefixes):
-                continue
+            arr.append((
+                field_id,
+                text_value,
+                val.get('text_lang'),
+                val.get('authority'),
+                val.get('confidence'),
+                val.get('place'),
+            ))
 
             # metadata_field_id 25 is Item's handle
-            if val['metadata_field_id'] == self.V5_DC_IDENTIFIER_URI_ID:
-                d = self._versions.get(val['text_value'], {})
+            if field_id == self.V5_DC_IDENTIFIER_URI_ID and any(
+                text_value.startswith(prefix) for prefix in handle_prefixes
+            ):
+                d = self._versions.get(text_value, {})
                 d['item_id'] = val['resource_id']
-                self._versions[val['text_value']] = d
+                self._versions[text_value] = d
+
+            now = time.perf_counter()
+            if idx % progress_every_rows == 0 or (now - last_progress_ts) >= progress_every_seconds:
+                elapsed = now - started
+                speed = idx / elapsed if elapsed > 0 else 0.0
+                if is_jsonl:
+                    pct = (bytes_read * 100.0 / total_bytes) if total_bytes > 0 else 0.0
+                    _logger.info(
+                        f"[METADATA] indexing progress rows={idx} kept={kept_len} pct={pct:.1f}% speed={speed:.0f} rows/s"
+                    )
+                else:
+                    pct = (idx * 100.0 / orig_len) if orig_len > 0 else 0.0
+                    _logger.info(
+                        f"[METADATA] indexing progress rows={idx}/{orig_len} kept={kept_len} pct={pct:.1f}% speed={speed:.0f} rows/s"
+                    )
+                last_progress_ts = now
+
+        if orig_len != kept_len:
+            _logger.warning(
+                f"Ignoring metadata fields [{self.ignored_fields}], len:[{orig_len}->{kept_len}]")
+
+        # release large source array reference as early as possible
+        if not is_jsonl:
+            del js_value
+
+        elapsed = time.perf_counter() - started
+        _logger.info(
+            f"[METADATA] init: done rows={orig_len} kept={kept_len} elapsed={elapsed:.1f}s"
+        )
 
     def __len__(self):
         return sum(len(x) for x in self._values.values())
@@ -387,6 +462,17 @@ class metadatas:
     @property
     def imported_schemas(self):
         return self._imported['schema_imported']
+
+    def collection_default_read_groups(self):
+        rec = re.compile(r"COLLECTION_(\d+)_DEFAULT_READ")
+        out = {}
+        for group_id_str, group_meta in self._values.get(str(6), {}).items():
+            for _, text_value, _, _, _, _ in group_meta:
+                m = rec.search(text_value or '')
+                if m is None:
+                    continue
+                out[int(m.group(1))] = int(group_id_str)
+        return out
 
     @property
     def existed_schemas(self):
@@ -620,6 +706,19 @@ class metadatas:
             key += '.' + field_js['qualifier']
         return key
 
+    def _get_key_v2_by_field_id(self, int_meta_field_id: int):
+        field_js = self._fields_id2js_v5.get(int_meta_field_id, None)
+        if field_js is None:
+            return None
+        schema_id = field_js["metadata_schema_id"]
+        schema_js = self._schemas_id2js_v5.get(schema_id, None)
+        if schema_js is None:
+            return None
+        key = schema_js['short_id'] + '.' + field_js['element']
+        if field_js['qualifier']:
+            key += '.' + field_js['qualifier']
+        return key
+
     def filter_res_d(self, res_d, ignored_mtd_fields):
         """
             Filter the resulting res_d dictionary based on custom ignored metadata fields.
@@ -653,32 +752,33 @@ class metadatas:
 
         vals = tp_values[res_id]
 
-        vals = [x for x in vals if (self.exists_field(x['metadata_field_id']) or
-                                    x['metadata_field_id'] in self.replaced_fields)]
+        vals = [x for x in vals if (self.exists_field(
+            x[0]) or x[0] in self.replaced_fields)]
         if len(vals) == 0:
             return {}
 
         # special case - return only text_value
         if text_for_field_id is not None:
-            vals = [x['text_value']
-                    for x in vals if x['metadata_field_id'] == text_for_field_id]
+            vals = [text_value for field_id, text_value, _, _,
+                    _, _ in vals if field_id == text_for_field_id]
             return vals
 
         res_d = {}
         # create list of object metadata
-        for val in vals:
-            # key = self._get_key_v1(val)
-            key = self._get_key_v2(val)
+        for field_id, text_value, text_lang, authority, confidence, place in vals:
+            key = self._get_key_v2_by_field_id(field_id)
+            if key is None:
+                continue
 
             # if key != key2:
             #     _logger.critical(f"Incorrect v2 impl.")
 
             d = {
-                'value': val['text_value'],
-                'language': val['text_lang'],
-                'authority': val['authority'],
-                'confidence': val['confidence'],
-                'place': val['place']
+                'value': text_value,
+                'language': text_lang,
+                'authority': authority,
+                'confidence': confidence,
+                'place': place
             }
             res_d.setdefault(key, []).append(d)
 

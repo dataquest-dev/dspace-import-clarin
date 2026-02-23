@@ -5,6 +5,7 @@ ts = datetime.now().strftime("%Y_%m_%d__%H.%M.%S")
 
 settings = {
     "log_file": os.path.join(_this_dir, "../__logs", f"{ts}.txt"),
+    "memory_log_file": os.path.join(_this_dir, "../__logs", f"{ts}.memory.txt"),
 
     "resume_dir": "__temp/resume/",
 
