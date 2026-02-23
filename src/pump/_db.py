@@ -92,6 +92,22 @@ class db:
     def __init__(self, env: dict):
         self._conn = conn(env)
 
+    def _ensure_connection(self, attempt: int, max_retries: int):
+        if self._conn.is_connected():
+            return
+
+        had_previous_connection = self._conn._conn is not None
+        if had_previous_connection:
+            _logger.warning(
+                f"Database connection dropped, reconnecting... (attempt {attempt + 1}/{max_retries})"
+            )
+        else:
+            _logger.info(
+                f"Connecting to database [{self._conn.name}] at {self._conn.host}:{self._conn.port} "
+                f"(attempt {attempt + 1}/{max_retries})"
+            )
+        self._conn.reconnect()
+
     def _exponential_backoff_sleep(self, attempt: int):
         """Calculate and perform exponential backoff sleep with max delay limit."""
         delay = DB_RETRY_BASE_DELAY * (2 ** attempt)
@@ -107,10 +123,7 @@ class db:
 
         for attempt in range(max_retries):
             try:
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 if chunk_size:
                     return self._fetch_all_chunked(sql, col_names, chunk_size)
@@ -233,10 +246,7 @@ class db:
         for attempt in range(max_retries):
             try:
                 # Check connection health before executing
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 with self._conn as cursor:
                     cursor.execute(sql)
@@ -276,10 +286,7 @@ class db:
 
         for attempt in range(max_retries):
             try:
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 with self._conn as cursor:
                     if params is not None:

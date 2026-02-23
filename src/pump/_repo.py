@@ -36,7 +36,7 @@ def export_table(db, table_name: str, out_f: str):
 
     started = time.perf_counter()
     total_rows = db.fetch_one(f'SELECT COUNT(*) FROM "{table_name}"') or 0
-    _logger.info(f"[EXPORT] {table_name}: start rows={total_rows} -> {out_f}")
+    _logger.debug(f"[EXPORT] {table_name}: start rows={total_rows} -> {out_f}")
 
     chunk_size = 20000
     logged_step = 100000
@@ -76,7 +76,7 @@ def export_table(db, table_name: str, out_f: str):
                 exported += len(serialized_rows)
                 if progress is not None:
                     progress.update(len(serialized_rows))
-                if exported % logged_step == 0 or exported == total_rows:
+                if progress is None and (exported % logged_step == 0 or exported == total_rows):
                     took = time.perf_counter() - started
                     speed = exported / took if took > 0 else 0
                     _logger.info(
