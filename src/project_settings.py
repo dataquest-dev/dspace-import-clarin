@@ -44,7 +44,7 @@ settings = {
     "db_dspace_7": {
         # CLARIN-DSpace 7 database
         "name": "dspace",
-        "host": "localhost",
+        "host": "127.0.0.1",
         # careful - NON standard port
         "port": 5435,
         "user": "dspace",
@@ -53,7 +53,7 @@ settings = {
 
     "db_dspace_5": {
         "name": "clarin-dspace",
-        "host": "localhost",
+        "host": "127.0.0.1",
         "user": "postgres",
         "password": "dspace",
         "port": 5432,
@@ -61,7 +61,7 @@ settings = {
 
     "db_utilities_5": {
         "name": "clarin-utilities",
-        "host": "localhost",
+        "host": "127.0.0.1",
         "user": "postgres",
         "password": "dspace",
         "port": 5432,

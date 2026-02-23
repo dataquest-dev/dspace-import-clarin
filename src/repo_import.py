@@ -3,6 +3,8 @@ import time
 import os
 import argparse
 import logging
+import gc
+import tracemalloc
 
 import settings
 import project_settings
@@ -43,6 +45,26 @@ def deserialize(resume: bool, obj, cache_file: str) -> bool:
     return True
 
 
+def log_checkpoint(label: str, since_ts: float) -> float:
+    now = time.perf_counter()
+    elapsed = now - since_ts
+
+    if tracemalloc.is_tracing():
+        py_current, py_peak = tracemalloc.get_traced_memory()
+        py_current_mb = py_current / (1024 * 1024)
+        py_peak_mb = py_peak / (1024 * 1024)
+    else:
+        py_current_mb = 0.0
+        py_peak_mb = 0.0
+
+    gc0, gc1, gc2 = gc.get_count()
+    _logger.info(
+        f"[PROFILE] {label} | elapsed={elapsed:.2f}s | "
+        f"py_current={py_current_mb:.1f}MB | py_peak={py_peak_mb:.1f}MB | gc=({gc0},{gc1},{gc2})"
+    )
+    return now
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Import data from previous version to current DSpace')
@@ -64,6 +86,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     s = time.time()
+    if not tracemalloc.is_tracing():
+        tracemalloc.start(25)
+    checkpoint_ts = time.perf_counter()
+    checkpoint_ts = log_checkpoint("startup", checkpoint_ts)
 
     for k, v in [x.split("=") for x in (args.config or [])]:
         _logger.info(f"Updating [{k}]->[{v}]")
@@ -92,11 +118,13 @@ if __name__ == "__main__":
         env["backend"]["password"],
         env["backend"]["authentication"]
     )
+    checkpoint_ts = log_checkpoint("backend_connection_ready", checkpoint_ts)
 
     env["tempdb"] = args.tempdb
     env["test"] = args.test
     _logger.info("Loading repo objects")
     repo = pump.repo(env, dspace_be)
+    checkpoint_ts = log_checkpoint("repo_objects_loaded", checkpoint_ts)
 
     ####
     _logger.info("New instance database status:")
@@ -105,6 +133,7 @@ if __name__ == "__main__":
     repo.raw_db_dspace_5.status()
     _logger.info("Reference database dspace-utilities status:")
     repo.raw_db_utilities_5.status()
+    checkpoint_ts = log_checkpoint("database_status_checked", checkpoint_ts)
 
     import_sep = f"\n{40 * '*'}\n"
     _logger.info("Starting import")
@@ -118,6 +147,7 @@ if __name__ == "__main__":
         repo.handles.serialize(cache_file)
     repo.diff(repo.handles)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("handles_done", checkpoint_ts)
 
     # import metadata
     cache_file = env["cache"]["metadataschema"]
@@ -129,6 +159,7 @@ if __name__ == "__main__":
         repo.metadatas.serialize(cache_file)
     repo.diff(repo.metadatas)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("metadata_done", checkpoint_ts)
 
     # import bitstreamformatregistry
     cache_file = env["cache"]["bitstreamformat"]
@@ -140,6 +171,7 @@ if __name__ == "__main__":
         repo.bitstreamformatregistry.serialize(cache_file)
     repo.diff(repo.bitstreamformatregistry)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("bitstreamformat_done", checkpoint_ts)
 
     # import community
     cache_file = env["cache"]["community"]
@@ -152,6 +184,7 @@ if __name__ == "__main__":
             repo.communities.serialize(cache_file)
     repo.diff(repo.communities)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("community_done", checkpoint_ts)
 
     # import collection
     cache_file = env["cache"]["collection"]
@@ -164,6 +197,7 @@ if __name__ == "__main__":
         repo.collections.serialize(cache_file)
     repo.diff(repo.collections)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("collection_done", checkpoint_ts)
 
     # import registration data
     cache_file = env["cache"]["registrationdata"]
@@ -174,6 +208,7 @@ if __name__ == "__main__":
         repo.registrationdatas.serialize(cache_file)
     repo.diff(repo.registrationdatas)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("registrationdata_done", checkpoint_ts)
 
     # import eperson groups
     cache_file = env["cache"]["epersongroup"]
@@ -186,6 +221,7 @@ if __name__ == "__main__":
         repo.groups.serialize(cache_file)
     repo.diff(repo.groups)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("epersongroup_done", checkpoint_ts)
 
     # import eperson
     cache_file = env["cache"]["eperson"]
@@ -196,6 +232,7 @@ if __name__ == "__main__":
         repo.epersons.serialize(cache_file)
     repo.diff(repo.epersons)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("eperson_done", checkpoint_ts)
 
     # import userregistrations
     cache_file = env["cache"]["userregistration"]
@@ -206,6 +243,7 @@ if __name__ == "__main__":
         repo.userregistrations.serialize(cache_file)
     repo.diff(repo.userregistrations)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("userregistration_done", checkpoint_ts)
 
     # import group2eperson
     cache_file = env["cache"]["group2eperson"]
@@ -216,6 +254,7 @@ if __name__ == "__main__":
         repo.egroups.serialize(cache_file)
     repo.diff(repo.egroups)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("group2eperson_done", checkpoint_ts)
 
     # import licenses
     cache_file = env["cache"]["license"]
@@ -227,6 +266,7 @@ if __name__ == "__main__":
         repo.licenses.serialize(cache_file)
     repo.diff(repo.licenses)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("license_done", checkpoint_ts)
 
     # import item
     cache_file = env["cache"]["item"]
@@ -243,6 +283,7 @@ if __name__ == "__main__":
     repo.diff(repo.items)
     repo.test(repo.items)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("item_done", checkpoint_ts)
 
     # import bundle
     cache_file = env["cache"]["bundle"]
@@ -253,6 +294,7 @@ if __name__ == "__main__":
         repo.bundles.serialize(cache_file)
     repo.diff(repo.bundles)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("bundle_done", checkpoint_ts)
 
     # import bitstreams
     cache_file = env["cache"]["bitstream"]
@@ -267,6 +309,7 @@ if __name__ == "__main__":
     repo.diff(repo.bitstreams)
     repo.test(repo.bitstreams)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("bitstream_done", checkpoint_ts)
 
     # import usermetadata
     cache_file = env["cache"]["usermetadata"]
@@ -277,6 +320,7 @@ if __name__ == "__main__":
         repo.usermetadatas.serialize(cache_file)
     repo.diff(repo.usermetadatas)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("usermetadata_done", checkpoint_ts)
 
     # import resourcepolicy
     cache_file = env["cache"]["resourcepolicy"]
@@ -291,10 +335,12 @@ if __name__ == "__main__":
     repo.diff(repo.resourcepolicies)
     repo.test(repo.resourcepolicies)
     _logger.info(import_sep)
+    checkpoint_ts = log_checkpoint("resourcepolicy_done", checkpoint_ts)
 
     # migrate sequences
     repo.sequences.migrate(env, repo.raw_db_7, repo.raw_db_dspace_5,
                            repo.raw_db_utilities_5)
+    checkpoint_ts = log_checkpoint("sequences_migrated", checkpoint_ts)
 
     took = time.time() - s
     _logger.info(f"Took [{round(took, 2)}] seconds to import all data")
@@ -313,3 +359,4 @@ if __name__ == "__main__":
 
     _logger.info("Database test")
     repo.test()
+    checkpoint_ts = log_checkpoint("import_finished", checkpoint_ts)

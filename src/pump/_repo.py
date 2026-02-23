@@ -1,7 +1,7 @@
 import logging
 import os
-import json
 import shutil
+import time
 
 from ._utils import time_method
 
@@ -29,9 +29,71 @@ _logger = logging.getLogger("pump.repo")
 
 
 def export_table(db, table_name: str, out_f: str):
+    try:
+        from tqdm import tqdm
+    except Exception:
+        tqdm = None
+
+    started = time.perf_counter()
+    total_rows = db.fetch_one(f'SELECT COUNT(*) FROM "{table_name}"') or 0
+    _logger.info(f"[EXPORT] {table_name}: start rows={total_rows} -> {out_f}")
+
+    chunk_size = 20000
+    logged_step = 100000
+    exported = 0
+    first = True
+
+    progress = None
+    if tqdm is not None and total_rows > 0:
+        progress = tqdm(
+            total=total_rows,
+            desc=f"export:{table_name}",
+            unit="rows",
+            mininterval=2,
+            dynamic_ncols=True,
+        )
+
     with open(out_f, 'w', encoding='utf-8') as fout:
-        js = db.fetch_one(f'SELECT json_agg(row_to_json(t)) FROM "{table_name}" t')
-        json.dump(js, fout)
+        fout.write('[')
+        with db._conn as cursor:
+            cursor.itersize = chunk_size
+            cursor.execute(f'SELECT row_to_json(t)::text FROM "{table_name}" t')
+            while True:
+                rows = cursor.fetchmany(chunk_size)
+                if not rows:
+                    break
+
+                serialized_rows = [row[0] for row in rows if row and row[0] is not None]
+                if serialized_rows:
+                    chunk_text = ",".join(serialized_rows)
+                    if first:
+                        fout.write(chunk_text)
+                        first = False
+                    else:
+                        fout.write(',')
+                        fout.write(chunk_text)
+
+                exported += len(serialized_rows)
+                if progress is not None:
+                    progress.update(len(serialized_rows))
+                if exported % logged_step == 0 or exported == total_rows:
+                    took = time.perf_counter() - started
+                    speed = exported / took if took > 0 else 0
+                    _logger.info(
+                        f"[EXPORT] {table_name}: exported={exported}/{total_rows} rows elapsed={took:.1f}s speed={speed:.0f} rows/s"
+                    )
+
+        fout.write(']')
+
+    if progress is not None:
+        progress.close()
+
+    took = time.perf_counter() - started
+    size_mb = os.path.getsize(out_f) / (1024 * 1024)
+    speed = exported / took if took > 0 else 0
+    _logger.info(
+        f"[EXPORT] {table_name}: done rows={exported}/{total_rows} size={size_mb:.1f}MB elapsed={took:.1f}s speed={speed:.0f} rows/s"
+    )
 
 
 class repo:
