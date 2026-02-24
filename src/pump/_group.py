@@ -233,7 +233,7 @@ class groups:
                 continue
 
             try:
-                # continue
+
                 resp = dspace.put_eperson_group({}, data)
                 if resp is None or 'id' not in resp:
                     refreshed = dspace.fetch_existing_epersongroups() or []

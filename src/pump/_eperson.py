@@ -136,9 +136,7 @@ class epersons:
                         candidate_ids.append(src_id)
             if e_netid:
                 src_id = self._netid2id.get(str(e_netid).strip())
-                if src_id is None:
-                    pass
-                else:
+                if src_id is not None:
                     candidate_ids.append(src_id)
 
             for src_id in candidate_ids:

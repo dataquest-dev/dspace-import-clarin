@@ -17,7 +17,7 @@ def load_env(file_str: str):
 def init_logging(
         logger,
         log_file: str,
-    memory_log_file: str = None,
+        memory_log_file: str = None,
         console_level=logging.INFO,
         file_level=logging.INFO,
         format: str = '%(asctime)s:%(levelname)s: %(message)s'):

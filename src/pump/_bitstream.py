@@ -267,7 +267,7 @@ class bitstreams:
                     logging.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
             except Exception as e:
                 _logger.error(f'put_bitstream [{b_id}]: failed. Exception: [{str(e)}]')
-                raise RuntimeError(f'Bitstream import failed for [{b_id}]') from e
+                raise RuntimeError(f'Bitstream import failed for [{b_id}]: {e}') from e
 
         # do bitstream checksum for the last imported bitstreams
         # these bitstreams can be less than 500, so it is not calculated in a loop
