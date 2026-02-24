@@ -29,7 +29,7 @@ settings = {
         # clarin-dspace=# select * from metadatafieldregistry  where metadata_field_id=178 ;
         # -------------------+--------------------+-------------+---------------+----------------------------------------
         #                178 |                  3 |  bitstream  | redirectToURL |    Get the bitstream from this URL.
-        "fields": ['local.bitstream.file', 'local.bitstream.redirectToURL'],
+        "fields": ['local.bitstream.file', 'local.bitstream.redirectToURL', 'local.branding'],
     },
 
     "replaced": {
