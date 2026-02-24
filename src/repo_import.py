@@ -149,7 +149,8 @@ if __name__ == "__main__":
         env["backend"]["endpoint"],
         env["backend"]["user"],
         env["backend"]["password"],
-        env["backend"]["authentication"]
+        env["backend"]["authentication"],
+        env["backend"].get("reauth_minutes", 20),
     )
     checkpoint_ts = log_checkpoint("backend_connection_ready", checkpoint_ts)
 

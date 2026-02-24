@@ -14,6 +14,7 @@ settings = {
         "user": "dspace.admin.dev@dataquest.sk",
         "password": "admin",
         "authentication": True,
+        "reauth_minutes": 20,
         "testing": True,
     },
 

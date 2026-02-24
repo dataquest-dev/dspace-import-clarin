@@ -60,12 +60,15 @@ class rest:
         original python rest api by dspace developers
     """
 
-    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True):
+    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
+                 reauth_minutes: int = 20):
         _logger.info(f"Initialise connection to DSpace REST backend [{endpoint}]")
 
         self._acceptable_resp = []
         self._get_cnt = 0
         self._post_cnt = 0
+        self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
+        self._last_auth_ts = 0.0
 
         # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
         self._consecutive_500_errors = 0
@@ -85,6 +88,7 @@ class rest:
             if not self.client.authenticate():
                 _logger.error(f'Error auth to dspace REST API at [{endpoint}]!')
                 raise ConnectionError("Cannot connect to dspace!")
+            self._last_auth_ts = time.time()
             _logger.debug(f"Successfully logged in to [{endpoint}]")
         _logger.info(f"DSpace REST backend is available at [{endpoint}]")
         self.endpoint = endpoint.rstrip("/")
@@ -567,6 +571,7 @@ class rest:
 
         for attempt in range(HTTP_MAX_RETRIES):
             try:
+                self._maybe_reauthenticate()
                 r = self.post(url, params=param, data=data)
 
                 if r.ok:
@@ -656,6 +661,19 @@ class rest:
         msg = f"POST [{url}] for [{ascii_data}] failed after {HTTP_MAX_RETRIES} attempts. Final error: {error_detail}"
         _logger.error(msg)
         return None
+
+    def _maybe_reauthenticate(self, force: bool = False):
+        if not force:
+            if self._reauth_seconds <= 0:
+                return True
+            if self._last_auth_ts > 0 and (time.time() - self._last_auth_ts) < self._reauth_seconds:
+                return True
+
+        _logger.info("Refreshing backend authentication token")
+        ok = self.client.authenticate()
+        if ok:
+            self._last_auth_ts = time.time()
+        return ok
 
     # =======
 
