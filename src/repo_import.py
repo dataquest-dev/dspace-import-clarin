@@ -5,7 +5,6 @@ import argparse
 import logging
 import gc
 import tracemalloc
-import ctypes
 
 import settings
 import project_settings
@@ -59,33 +58,12 @@ def str2bool(value):
 
 
 def _rss_mb() -> float:
-    if os.name != "nt":
-        return -1.0
     try:
-        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ("cb", ctypes.c_ulong),
-                ("PageFaultCount", ctypes.c_ulong),
-                ("PeakWorkingSetSize", ctypes.c_size_t),
-                ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t),
-                ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-
-        counters = PROCESS_MEMORY_COUNTERS()
-        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        ok = ctypes.windll.psapi.GetProcessMemoryInfo(
-            handle, ctypes.byref(counters), counters.cb)
-        if not ok:
+        import psutil
+        rss = psutil.Process(os.getpid()).memory_info().rss
+        if rss <= 0:
             return -1.0
-        if counters.WorkingSetSize <= 0:
-            return -1.0
-        return counters.WorkingSetSize / (1024 * 1024)
+        return rss / (1024 * 1024)
     except Exception:
         return -1.0
 

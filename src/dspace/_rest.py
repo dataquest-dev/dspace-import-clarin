@@ -675,11 +675,10 @@ class rest:
     def post(self, command: str, params=None, data=None):
         url = self.endpoint + '/' + command
         self._post_cnt += 1
-        return self.client.session.post(
+        return self.client.api_post(
             url,
-            json=(data or {}),
-            params=(params or {}),
-            headers=self.client.request_headers,
+            params or {},
+            data or {},
             timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
         )
 

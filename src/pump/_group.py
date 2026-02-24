@@ -212,8 +212,8 @@ class groups:
                 continue
 
             # get group metadata
-            g_meta = metadatas.value(groups.TYPE, g_id)
-            if not g_meta or 'dc.title' not in g_meta:
+            g_meta = metadatas.value(groups.TYPE, g_id) or {}
+            if 'dc.title' not in g_meta:
                 _logger.error(f'Metadata for group [{g_id}] does not contain dc.title!')
                 continue
 
