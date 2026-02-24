@@ -119,20 +119,6 @@ class groups:
     def expected_g2g(self):
         return len(self._g2g or {})
 
-    def reset_progress(self):
-        keep = {}
-        for gid in (groups.DEF_GID_ANON, groups.DEF_GID_ADMIN):
-            if gid in self._id2uuid:
-                keep[gid] = self._id2uuid[gid]
-        self._id2uuid = keep
-        self._imported = {
-            "eperson": 0,
-            "group": 0,
-            "g2g": 0,
-            "default_groups": 0,
-            "coll_groups": 0,
-        }
-
     @property
     def anonymous(self):
         return self.uuid(groups.DEF_GID_ANON)

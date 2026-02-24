@@ -97,12 +97,6 @@ class epersons:
     def mapped(self):
         return len(self._id2uuid)
 
-    def reset_progress(self):
-        self._id2uuid = {}
-        self._imported = {
-            "p": 0,
-        }
-
     def hydrate_uuid_map(self, raw_db_7):
         """Hydrate source eperson_id -> target uuid mapping from DB by email."""
         cols = []

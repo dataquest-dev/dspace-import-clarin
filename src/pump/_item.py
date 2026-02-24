@@ -145,28 +145,6 @@ class items:
     def done(self):
         return self._done
 
-    def reset_progress(self):
-        self._id2uuid = {}
-        self._ws_id2v7id = {}
-        self._ws_id2uuid = {}
-        self._wf_id2workflow_id = {}
-        self._wf_item_ids = []
-        self._col_id2uuid = {}
-        self._imported = {
-            "items": 0,
-            "wf": 0,
-            "ws": 0,
-            "cols": 0,
-            "versions": 0,
-        }
-        self._done = []
-        self._versions = {
-            "not_imported_handles": [],
-            "withdrawn": [],
-            "not_imported": [],
-        }
-        self._migrated_versions = []
-
     def item(self, item_id: int):
         return self._id2item[str(item_id)]
 

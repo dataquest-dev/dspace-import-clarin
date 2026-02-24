@@ -44,9 +44,6 @@ class handles:
         item = len(self.get_handles_by_type(items.TYPE, None) or [])
         return ext + item
 
-    def reset_progress(self):
-        self._imported = 0
-
     # =============
 
     def serialize(self, file_str: str):

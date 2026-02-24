@@ -86,15 +86,6 @@ class bitstreams:
     def done(self):
         return self._done
 
-    def reset_progress(self):
-        self._id2uuid = {}
-        self._imported = {
-            "bitstream": 0,
-            "com_logo": 0,
-            "col_logo": 0,
-        }
-        self._done = []
-
     @time_method
     def import_to(self, env, cache_file, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
         if "bs" in self._done:

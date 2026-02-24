@@ -531,8 +531,8 @@ class rest:
         return None
 
     def _put(self, url: str, arr: list, params: list = None):
-        results = list(self._iput(url, arr, params))
-        return sum(1 for r in results if r is not None)
+        list(self._iput(url, arr, params))
+        return len(arr)
 
     def _iput(self, url: str, arr: list, params=None):
         _logger.debug(f"Importing {len(arr)} using [{url}]")
