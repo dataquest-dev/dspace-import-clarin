@@ -72,38 +72,78 @@ class date:
     def value(self) -> str:
         return self._d
 
-    def is_valid(self):
-        """Check if the given string is a valid date."""
+    @staticmethod
+    def is_year_only(date_str: str) -> bool:
+        """Check if the string represents a year-only format (YYYY)."""
+        if len(date_str) != 4 or not date_str.isdigit():
+            return False
+        try:
+            datetime.strptime(date_str, '%Y')
+            return True
+        except ValueError:
+            return False
+
+    def is_valid_hybrid(self):
+        """Check if date is valid in YYYY-MM-DD, YYYY-MM, or YYYY format (all kept as-is)."""
+        # Check YYYY-MM-DD format
         try:
             datetime.strptime(self._d, '%Y-%m-%d')
             return True
-        except ValueError as e:
-            date.invalid[self._d] += 1
-            if date.invalid[self._d] == 1:
-                _logger.debug(f"[{self._d}] is not valid date. Error: {e}")
-            return False
+        except ValueError:
+            pass
+        
+        # Check YYYY-MM format (partial date)
+        try:
+            datetime.strptime(self._d, '%Y-%m')
+            return True
+        except ValueError:
+            pass
+        
+        # Check YYYY format (year only)
+        if date.is_year_only(self._d):
+            return True
+        
+        date.invalid[self._d] += 1
+        if date.invalid[self._d] == 1:
+            _logger.debug(f"[{self._d}] is not valid date format (expected YYYY-MM-DD, YYYY-MM, or YYYY)")
+        return False
 
-    def parse(self) -> bool:
-        """Convert the value to a date format. Normalize date to 'YYYY-MM-DD' format, filling missing parts with '01'."""
+    def parse_hybrid(self) -> bool:
+        """Convert date with hybrid rules:
+        - Keep YYYY format as-is (year only)
+        - Keep YYYY-MM format as-is (partial date, but normalize separators)
+        - Convert full dates to YYYY-MM-DD format
+        """
         if len(self._d) < 1:
             return False
 
-        formats = ['%Y/%m/%d', '%d/%m/%Y', '%Y.%m.%d', '%d.%m.%Y', '%Y',
-                   '%Y-%m', '%m-%Y', '%Y/%m', '%m/%Y', '%Y.%m', '%m.%Y', '%d. %m. %Y']
-        for fmt in formats:
+        # Check if it's already year-only format (YYYY) - keep as-is
+        if date.is_year_only(self._d):
+            return True
+
+        # Try full date formats (with day, month, and year)
+        full_date_formats = ['%Y/%m/%d', '%d/%m/%Y', '%Y.%m.%d', '%d.%m.%Y', 
+                             '%Y-%m-%d', '%d-%m-%Y', '%d. %m. %Y']
+        for fmt in full_date_formats:
             try:
                 datetime_obj = datetime.strptime(self._d, fmt)
-                # Normalize date to 'YYYY-MM-DD'
-                if fmt in ['%Y-%m', '%Y/%m', '%Y.%m', '%m-%Y', "%m/%Y", "%m.%Y"]:
-                    self._d = datetime_obj.strftime('%Y-%m-01')
-                elif fmt == '%Y':
-                    self._d = datetime_obj.strftime('%Y-01-01')
-                else:
-                    self._d = datetime_obj.strftime('%Y-%m-%d')
+                # Normalize to 'YYYY-MM-DD'
+                self._d = datetime_obj.strftime('%Y-%m-%d')
                 return True
             except ValueError:
-                # The test format does not match the input date format
                 continue
+        
+        # Try partial date formats (year-month) - normalize to YYYY-MM
+        partial_formats = ['%Y-%m', '%m-%Y', '%Y/%m', '%m/%Y', '%Y.%m', '%m.%Y']
+        for fmt in partial_formats:
+            try:
+                datetime_obj = datetime.strptime(self._d, fmt)
+                # Normalize to 'YYYY-MM' (keep as partial date)
+                self._d = datetime_obj.strftime('%Y-%m')
+                return True
+            except ValueError:
+                continue
+        
         _logger.warning(f"Error converting [{self._d}] to date.")
         return False
 
@@ -136,9 +176,11 @@ class updater:
         self._dry_run = dry_run
         self._info = {
             "valid": [],
+            "valid_year_only": [],
             "multiple": set(),
             "invalid_date": [],
             "invalid_date_all": set(),
+            "anomalies": [],
             "updated": [],
             "error_updating": [],
             "error_creating": [],
@@ -169,36 +211,22 @@ class updater:
             # If there is more than one value, get only the first one
             meta_val = date(meta_key[0]["value"])
             # Convert date if necessary
-            if not meta_val.is_valid():
-                if not meta_val.parse():
+            if not meta_val.is_valid_hybrid():
+                if not meta_val.parse_hybrid():
                     self._info["invalid_date_all"].add(meta_val.input)
                     continue
             return meta_val, id_str
 
         return None, None
 
-    def update_existing_metadata(self, item: dict, date_str: str, force: bool = False) -> int:
-        uuid = item['uuid']
+    def _perform_update(self, item: dict, date_val: date, uuid: str, id_str: str) -> int:
+        """Common logic for updating item metadata in database."""
         item_mtd = item["metadata"]
-
-        id_str = f"Item [{uuid}]: [{self._to_mtd_field}]"
-        # If there is more than one value, get only the first one
-        date_val = date(date_str)
-        if not force:
-            if date_val.is_valid():
-                self._info["valid"].append((uuid, date_val.input))
-                return updater.ret_already_ok
-
-            parsed_ok = date_val.parse()
-            if parsed_ok is False:
-                _logger.error(f"{id_str}: cannot convert [{date_val.input}] to date")
-                self._info["invalid_date"].append((uuid, date_val.input))
-                return updater.ret_invalid_meta
-
-        # Convert date to correct format if necessary
+        
+        # Log conversion
         date.invalid_but_converted[date_val.input] += 1
         if date.invalid_but_converted[date_val.input] == 1:
-            _logger.info(f"{id_str}: invalid date [{date_val.input}] converted")
+            _logger.info(f"{id_str}: invalid date [{date_val.input}] converted to [{date_val.value}]")
 
         # Update the item metadata with the converted date
         item_mtd[self._to_mtd_field][0]["value"] = date_val.value
@@ -213,6 +241,40 @@ class updater:
 
         self._info["updated"].append((uuid, date_val.input))
         return updater.ret_updated
+
+    def update_existing_metadata(self, item: dict, date_str: str, force: bool = False) -> int:
+        """Update existing metadata with hybrid rules:
+        - No null/empty handling (will crash on None)
+        - YYYY formats kept as-is
+        - Partial dates (YYYY-MM) kept as-is (normalized)
+        - Invalid dates logged as ANOMALY
+        """
+        uuid = item['uuid']
+        id_str = f"Item [{uuid}]: [{self._to_mtd_field}]"
+        
+        # No null/empty handling - let it crash if needed
+        date_val = date(date_str)
+        if not force:
+            if date_val.is_valid_hybrid():
+                # Check if it's year-only or partial format
+                if date.is_year_only(date_str):
+                    self._info["valid_year_only"].append((uuid, date_val.input))
+                    _logger.info(f"{id_str}: year-only format [{date_str}] - keeping as-is")
+                elif len(date_str) == 7 and date_str[4] == '-':  # YYYY-MM format
+                    self._info["valid"].append((uuid, date_val.input))
+                    _logger.info(f"{id_str}: partial date format [{date_str}] - keeping as-is")
+                else:
+                    self._info["valid"].append((uuid, date_val.input))
+                return updater.ret_already_ok
+
+            parsed_ok = date_val.parse_hybrid()
+            if parsed_ok is False:
+                _logger.error(f"{id_str}: cannot convert [{date_val.input}] to date - ANOMALY")
+                self._info["invalid_date"].append((uuid, date_val.input))
+                self._info["anomalies"].append((uuid, date_val.input, "Cannot parse date format"))
+                return updater.ret_invalid_meta
+
+        return self._perform_update(item, date_val, uuid, id_str)
 
     def add_new_metadata(self, item) -> int:
         uuid = item['uuid']
@@ -250,7 +312,7 @@ class updater:
                     for i in range(len(date_meta)):
                         if len(val) == 0:
                             date_val = date(date_meta[i]["value"])
-                            if date_val.is_valid() or date_val.parse():
+                            if date_val.is_valid_hybrid() or date_val.parse_hybrid():
                                 val = date_val.value
                                 continue
                         if val == '' and i == len(date_meta) - 1:
@@ -275,6 +337,7 @@ class updater:
                         f"Forced metadata change but no value found for [{uuid}]")
                     return updater.ret_empty_meta
 
+            # Always use standard validation/parsing (no relaxed mode)
             return self.update_existing_metadata(item, val, force=force)
         else:
             return self.add_new_metadata(item)
@@ -312,10 +375,12 @@ class additional_stats:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Add metadata for DSpace items")
     parser.add_argument("--to_mtd_field",
-                        type=str, required=True, help="Metadata field to be created.")
+                        type=str, required=False, help="Metadata field to be created or updated (required unless --fix-date-format is used).")
     parser.add_argument("--from_mtd_field",
-                        type=str, nargs='+', required=True,
+                        type=str, nargs='+', required=False,
                         help="Metadata field(s) from which value(s) can be used.")
+    parser.add_argument("--fix-date-format", action='store_true', default=False,
+                        help="Fix date format in dc.date.issued field (no other parameters needed)")
     parser.add_argument("--endpoint", type=str, default=env["backend"]["endpoint"])
     parser.add_argument("--user", type=str, default=env["backend"]["user"])
     parser.add_argument("--password", type=str, default=env["backend"]["password"])
@@ -323,6 +388,18 @@ if __name__ == '__main__':
     parser.add_argument("--result-every-N", type=int, default=10000)
     parser.add_argument("--only", type=str, default=None)
     args = parser.parse_args()
+    
+    # Handle fix-date-format mode
+    if args.fix_date_format:
+        args.to_mtd_field = "dc.date.issued"
+        args.from_mtd_field = ["dc.date.issued"]
+        _logger.info("Fix date format mode enabled: correcting dc.date.issued")
+    
+    # Validate required arguments for non-fix-date-format mode
+    if not args.fix_date_format:
+        if args.to_mtd_field is None or args.from_mtd_field is None:
+            parser.error("--to_mtd_field and --from_mtd_field are required unless --fix-date-format is used")
+    
     # output args from parse_args but without passwords
     args_dict = vars(args).copy()
     args_dict.pop("password", None)
@@ -341,7 +418,8 @@ if __name__ == '__main__':
     # Initialize DSpace backend
     dspace_be = dspace.rest(endpoint, user, password, True)
 
-    upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field, dry_run=args.dry_run)
+    upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field, 
+                  dry_run=args.dry_run)
 
     stats = additional_stats()
 
@@ -435,6 +513,15 @@ if __name__ == '__main__':
     limit = 50
     for k, v in upd.info.items():
         _logger.info(f"{k:20s}:{len(v):6d}: first {limit} items .. {list(v)[:limit]}...")
+
+    _logger.info(40 * "=")
+    _logger.info("Anomalies found:")
+    if len(upd.info["anomalies"]) > 0:
+        _logger.warning(f"Total anomalies: {len(upd.info['anomalies'])}")
+        for uuid, value, reason in upd.info["anomalies"][:100]:  # Show first 100
+            _logger.warning(f"  Item [{uuid}]: value=[{value}] - {reason}")
+    else:
+        _logger.info("No anomalies found")
 
     _logger.info(40 * "=")
     _logger.info("Date info")
