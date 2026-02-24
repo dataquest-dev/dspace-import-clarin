@@ -55,6 +55,12 @@ class bundles:
     def imported(self):
         return self._imported['bundles']
 
+    def reset_progress(self):
+        self._id2uuid = {}
+        self._imported = {
+            "bundles": 0,
+        }
+
     @time_method
     def import_to(self, dspace, metadatas, items):
         expected = len(self)

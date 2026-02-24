@@ -47,6 +47,17 @@ def deserialize(resume: bool, obj, cache_file: str) -> bool:
     return True
 
 
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if v in ("0", "false", "f", "no", "n", "off"):
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
+
 def _rss_mb() -> float:
     if os.name != "nt":
         return -1.0
@@ -110,7 +121,7 @@ if __name__ == "__main__":
         description='Import data from previous version to current DSpace')
     parser.add_argument('--resume',
                         help='Resume by loading values into dictionary',
-                        required=False, type=bool, default=True)
+                        required=False, type=str2bool, default=False)
     parser.add_argument('--config',
                         help='Update configs',
                         required=False, type=str, action='append')
@@ -152,6 +163,7 @@ if __name__ == "__main__":
     # verify_disabled_mailserver()
 
     # update based on env
+    os.makedirs(env["resume_dir"], exist_ok=True)
     for k, v in env["cache"].items():
         env["cache"][k] = os.path.join(env["resume_dir"], v)
 

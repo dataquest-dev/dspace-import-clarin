@@ -82,6 +82,19 @@ class bitstreams:
     def imported_col_logos(self):
         return self._imported['col_logo']
 
+    @property
+    def done(self):
+        return self._done
+
+    def reset_progress(self):
+        self._id2uuid = {}
+        self._imported = {
+            "bitstream": 0,
+            "com_logo": 0,
+            "col_logo": 0,
+        }
+        self._done = []
+
     @time_method
     def import_to(self, env, cache_file, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
         if "bs" in self._done:
@@ -246,12 +259,15 @@ class bitstreams:
                 params['primaryBundle_id'] = bundles.uuid(bundles.primary[b_id])
             try:
                 resp = dspace.put_bitstream(params, data)
+                if not isinstance(resp, dict) or 'id' not in resp:
+                    raise RuntimeError(f'Invalid response from put_bitstream: [{resp}]')
                 self._id2uuid[str(b_id)] = resp['id']
                 self._imported["bitstream"] += 1
                 if b['deleted']:
                     logging.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
             except Exception as e:
                 _logger.error(f'put_bitstream [{b_id}]: failed. Exception: [{str(e)}]')
+                raise RuntimeError(f'Bitstream import failed for [{b_id}]') from e
 
         # do bitstream checksum for the last imported bitstreams
         # these bitstreams can be less than 500, so it is not calculated in a loop

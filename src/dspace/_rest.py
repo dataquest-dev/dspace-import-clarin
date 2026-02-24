@@ -13,6 +13,8 @@ HTTP_MAX_RETRIES = 3
 HTTP_RETRY_DELAY = 1  # seconds
 HTTP_RETRY_BACKOFF = 1.5
 HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
+HTTP_CONNECT_TIMEOUT = 10
+HTTP_READ_TIMEOUT = 120
 
 # Circuit breaker for persistent errors
 HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
@@ -529,7 +531,8 @@ class rest:
         return None
 
     def _put(self, url: str, arr: list, params: list = None):
-        return len(list(self._iput(url, arr, params)))
+        results = list(self._iput(url, arr, params))
+        return sum(1 for r in results if r is not None)
 
     def _iput(self, url: str, arr: list, params=None):
         _logger.debug(f"Importing {len(arr)} using [{url}]")
@@ -672,7 +675,13 @@ class rest:
     def post(self, command: str, params=None, data=None):
         url = self.endpoint + '/' + command
         self._post_cnt += 1
-        return self.client.api_post(url, params or {}, data or {})
+        return self.client.session.post(
+            url,
+            json=(data or {}),
+            params=(params or {}),
+            headers=self.client.request_headers,
+            timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
+        )
 
     def _is_circuit_breaker_open(self):
         """Check if circuit breaker is open due to too many consecutive failures"""

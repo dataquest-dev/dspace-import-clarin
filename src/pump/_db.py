@@ -359,7 +359,16 @@ class db:
         return self.fetch_all(
             "SELECT table_name FROM information_schema.tables WHERE is_insertable_into = 'YES' AND table_schema = 'public'")
 
-    def table_count(self):
+    def table_count(self, exact: bool = False):
+        if not exact:
+            sql = (
+                "SELECT relname, COALESCE(n_live_tup, 0) "
+                "FROM pg_stat_user_tables "
+                "ORDER BY relname"
+            )
+            rows = self.fetch_all(sql) or []
+            return {name: int(cnt or 0) for name, cnt in rows}
+
         d = {}
         tables = self.all_tables()
         for table in tables:
@@ -369,8 +378,8 @@ class db:
             d[name] = count
         return d
 
-    def status(self):
-        d = self.table_count()
+    def status(self, exact: bool = False):
+        d = self.table_count(exact=exact)
         zero = ""
         msg = ""
         for name in sorted(d.keys()):
@@ -380,7 +389,8 @@ class db:
             else:
                 msg += f"{name: >40}: {int(count): >8d}\n"
 
-        _logger.info(f"\n{msg}Empty tables:\n\t{zero}")
+        approx_text = "(estimated counts)" if not exact else "(exact counts)"
+        _logger.info(f"\n{msg}Empty tables:\n\t{zero}\nStatus mode: {approx_text}")
         _logger.info(40 * "=")
 
 
