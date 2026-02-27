@@ -7,3 +7,4 @@ tqdm
 requests-toolbelt
 six
 pysolr~=3.9.0
+psutil

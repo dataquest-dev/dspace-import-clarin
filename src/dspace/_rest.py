@@ -13,6 +13,8 @@ HTTP_MAX_RETRIES = 3
 HTTP_RETRY_DELAY = 1  # seconds
 HTTP_RETRY_BACKOFF = 1.5
 HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
+HTTP_CONNECT_TIMEOUT = 10
+HTTP_READ_TIMEOUT = 120
 
 # Circuit breaker for persistent errors
 HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
@@ -58,12 +60,19 @@ class rest:
         original python rest api by dspace developers
     """
 
-    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True):
+    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
+                 reauth_minutes: int = 20):
         _logger.info(f"Initialise connection to DSpace REST backend [{endpoint}]")
 
         self._acceptable_resp = []
         self._get_cnt = 0
         self._post_cnt = 0
+        self._user = user
+        self._password = password
+        self._auth = auth
+        self._reauth_minutes = reauth_minutes
+        self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
+        self._last_auth_ts = 0.0
 
         # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
         self._consecutive_500_errors = 0
@@ -83,6 +92,7 @@ class rest:
             if not self.client.authenticate():
                 _logger.error(f'Error auth to dspace REST API at [{endpoint}]!')
                 raise ConnectionError("Cannot connect to dspace!")
+            self._last_auth_ts = time.time()
             _logger.debug(f"Successfully logged in to [{endpoint}]")
         _logger.info(f"DSpace REST backend is available at [{endpoint}]")
         self.endpoint = endpoint.rstrip("/")
@@ -96,6 +106,15 @@ class rest:
     @property
     def post_cnt(self):
         return self._post_cnt
+
+    def spawn_worker_client(self):
+        return rest(
+            self.endpoint,
+            self._user,
+            self._password,
+            self._auth,
+            self._reauth_minutes,
+        )
 
     # =======
 
@@ -529,7 +548,8 @@ class rest:
         return None
 
     def _put(self, url: str, arr: list, params: list = None):
-        return len(list(self._iput(url, arr, params)))
+        list(self._iput(url, arr, params))
+        return len(arr)
 
     def _iput(self, url: str, arr: list, params=None):
         _logger.debug(f"Importing {len(arr)} using [{url}]")
@@ -564,6 +584,7 @@ class rest:
 
         for attempt in range(HTTP_MAX_RETRIES):
             try:
+                self._maybe_reauthenticate()
                 r = self.post(url, params=param, data=data)
 
                 if r.ok:
@@ -579,6 +600,21 @@ class rest:
                         return js
                     except Exception:
                         return r
+
+                # Handle auth errors (recoverable via re-auth)
+                elif r.status_code in [401, 403]:
+                    last_response = r
+                    if attempt == HTTP_MAX_RETRIES - 1:
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
+                        break
+
+                    _logger.warning(
+                        f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - re-authenticating")
+                    if not self._maybe_reauthenticate(force=True):
+                        _logger.warning("Re-authentication failed")
+                        break
+                    continue
 
                 # Handle HTTP errors
                 elif r.status_code in HTTP_RETRYABLE_CODES:
@@ -654,6 +690,19 @@ class rest:
         _logger.error(msg)
         return None
 
+    def _maybe_reauthenticate(self, force: bool = False):
+        if not force:
+            if self._reauth_seconds <= 0:
+                return True
+            if self._last_auth_ts > 0 and (time.time() - self._last_auth_ts) < self._reauth_seconds:
+                return True
+
+        _logger.info("Refreshing backend authentication token")
+        ok = self.client.authenticate()
+        if ok:
+            self._last_auth_ts = time.time()
+        return ok
+
     # =======
 
     def get_many(self, command: str, size: int = 1000):
@@ -672,7 +721,12 @@ class rest:
     def post(self, command: str, params=None, data=None):
         url = self.endpoint + '/' + command
         self._post_cnt += 1
-        return self.client.api_post(url, params or {}, data or {})
+        return self.client.api_post(
+            url,
+            params or {},
+            data or {},
+            timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
+        )
 
     def _is_circuit_breaker_open(self):
         """Check if circuit breaker is open due to too many consecutive failures"""

@@ -17,6 +17,7 @@ def load_env(file_str: str):
 def init_logging(
         logger,
         log_file: str,
+        memory_log_file: str = None,
         console_level=logging.INFO,
         file_level=logging.INFO,
         format: str = '%(asctime)s:%(levelname)s: %(message)s'):
@@ -44,6 +45,24 @@ def init_logging(
         logger.addHandler(console_handler)
 
     logger.setLevel(logging.INFO)
+
+    if memory_log_file:
+        memory_log_dir = os.path.dirname(memory_log_file)
+        os.makedirs(memory_log_dir, exist_ok=True)
+
+        mem_logger = logging.getLogger("memory")
+        mem_logger.setLevel(logging.INFO)
+        mem_logger.propagate = False
+
+        if not any(
+            isinstance(h, logging.FileHandler) and getattr(
+                h, "baseFilename", None) == os.path.abspath(memory_log_file)
+            for h in mem_logger.handlers
+        ):
+            mem_handler = logging.FileHandler(memory_log_file, encoding="utf-8")
+            mem_handler.setFormatter(formatter)
+            mem_handler.setLevel(logging.INFO)
+            mem_logger.addHandler(mem_handler)
 
 
 def update_settings(main_env: dict, update_with: dict) -> dict:

@@ -92,6 +92,22 @@ class db:
     def __init__(self, env: dict):
         self._conn = conn(env)
 
+    def _ensure_connection(self, attempt: int, max_retries: int):
+        if self._conn.is_connected():
+            return
+
+        had_previous_connection = self._conn._conn is not None
+        if had_previous_connection:
+            _logger.warning(
+                f"Database connection dropped, reconnecting... (attempt {attempt + 1}/{max_retries})"
+            )
+        else:
+            _logger.info(
+                f"Connecting to database [{self._conn.name}] at {self._conn.host}:{self._conn.port} "
+                f"(attempt {attempt + 1}/{max_retries})"
+            )
+        self._conn.reconnect()
+
     def _exponential_backoff_sleep(self, attempt: int):
         """Calculate and perform exponential backoff sleep with max delay limit."""
         delay = DB_RETRY_BASE_DELAY * (2 ** attempt)
@@ -107,10 +123,7 @@ class db:
 
         for attempt in range(max_retries):
             try:
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 if chunk_size:
                     return self._fetch_all_chunked(sql, col_names, chunk_size)
@@ -233,10 +246,7 @@ class db:
         for attempt in range(max_retries):
             try:
                 # Check connection health before executing
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 with self._conn as cursor:
                     cursor.execute(sql)
@@ -276,10 +286,7 @@ class db:
 
         for attempt in range(max_retries):
             try:
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 with self._conn as cursor:
                     if params is not None:
@@ -352,7 +359,16 @@ class db:
         return self.fetch_all(
             "SELECT table_name FROM information_schema.tables WHERE is_insertable_into = 'YES' AND table_schema = 'public'")
 
-    def table_count(self):
+    def table_count(self, exact: bool = False):
+        if not exact:
+            sql = (
+                "SELECT relname, COALESCE(n_live_tup, 0) "
+                "FROM pg_stat_user_tables "
+                "ORDER BY relname"
+            )
+            rows = self.fetch_all(sql) or []
+            return {name: int(cnt or 0) for name, cnt in rows}
+
         d = {}
         tables = self.all_tables()
         for table in tables:
@@ -362,8 +378,8 @@ class db:
             d[name] = count
         return d
 
-    def status(self):
-        d = self.table_count()
+    def status(self, exact: bool = False):
+        d = self.table_count(exact=exact)
         zero = ""
         msg = ""
         for name in sorted(d.keys()):
@@ -373,7 +389,8 @@ class db:
             else:
                 msg += f"{name: >40}: {int(count): >8d}\n"
 
-        _logger.info(f"\n{msg}Empty tables:\n\t{zero}")
+        approx_text = "(estimated counts)" if not exact else "(exact counts)"
+        _logger.info(f"\n{msg}Empty tables:\n\t{zero}\nStatus mode: {approx_text}")
         _logger.info(40 * "=")
 
 
@@ -621,8 +638,11 @@ class differ:
                                                       [col_name]) if x[0] is not None]
 
             msg = " OK " if len(vals5_cmp) == len(vals7_cmp) else " !!! WARN !!! "
+            extra = ""
+            if str(col_name).lower() in ["withdrawn", "in_archive", "discoverable", "deleted"]:
+                extra = " (bool non-null; includes both true and false)"
             _logger.info(
-                f"Table [{table_name: >20}] {msg}  NON NULL [{col_name:>15}] v5:[{len(vals5_cmp):3}], v7:[{len(vals7_cmp):3}]")
+                f"Table [{table_name: >20}] {msg}  NOT NULL [{col_name:>15}] v5:[{len(vals5_cmp):3}], v7:[{len(vals7_cmp):3}]{extra}")
 
         if sql_info:
             _logger.info(

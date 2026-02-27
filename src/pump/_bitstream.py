@@ -82,6 +82,10 @@ class bitstreams:
     def imported_col_logos(self):
         return self._imported['col_logo']
 
+    @property
+    def done(self):
+        return self._done
+
     @time_method
     def import_to(self, env, cache_file, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
         if "bs" in self._done:
@@ -160,9 +164,15 @@ class bitstreams:
         log_after_import(log_key, expected, self.imported_com_logos)
 
     def _bitstream_import_to(self, env, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
-        expected = len(self)
+        skip_deleted = env["backend"].get("ignore_deleted_bitstreams", False)
+        expected = len([b for b in (self._bs or []) if not (
+            skip_deleted and b.get('deleted', False))])
         log_key = "bitstreams"
         log_before_import(log_key, expected)
+        failure_limit = 100
+        subsequent_fails = 0
+        failed_ids = []
+        skipped_deleted = 0
 
         test_instance = env["backend"].get("testing", False)
         path_assetstore = env["assetstore"]
@@ -170,9 +180,16 @@ class bitstreams:
             _logger.critical(
                 'Location of assetstore dir is not defined but it should be checked!')
 
-        for i, b in enumerate(progress_bar(self._bs)):
+        pbar = progress_bar(self._bs)
+        for i, b in enumerate(pbar):
             b_id = b['bitstream_id']
             b_deleted = b['deleted']
+
+            if skip_deleted and b_deleted:
+                skipped_deleted += 1
+                if hasattr(pbar, 'set_postfix_str') and (skipped_deleted == 1 or skipped_deleted % 25 == 0):
+                    pbar.set_postfix_str(f'skipped_deleted={skipped_deleted}')
+                continue
 
             # do bitstream checksum
             # do this after every 500 imported bitstreams,
@@ -211,7 +228,16 @@ class bitstreams:
 
             bformat_mimetype = bitstreamformatregistry.mimetype(b['bitstream_format_id'])
             if bformat_mimetype is None:
-                _logger.critical(f'Bitstream format not found for [{b_id}]')
+                unknown_mimetype = bitstreamformatregistry.mimetype(
+                    bitstreamformatregistry.unknown_format_id)
+                if unknown_mimetype is not None:
+                    _logger.warning(
+                        f'Bitstream format not found for [{b_id}] id:[{b.get("bitstream_format_id")}] - using unknown mimetype [{unknown_mimetype}]')
+                    bformat_mimetype = unknown_mimetype
+                else:
+                    bformat_mimetype = 'application/octet-stream'
+                    _logger.warning(
+                        f'Bitstream format not found for [{b_id}] id:[{b.get("bitstream_format_id")}] - using fallback mimetype [{bformat_mimetype}]')
 
             params = {
                 'internal_id': b['internal_id'],
@@ -246,12 +272,38 @@ class bitstreams:
                 params['primaryBundle_id'] = bundles.uuid(bundles.primary[b_id])
             try:
                 resp = dspace.put_bitstream(params, data)
+                if not isinstance(resp, dict) or 'id' not in resp:
+                    if b['deleted']:
+                        _logger.warning(
+                            f'put_bitstream [{b_id}] returned invalid response for deleted bitstream: [{resp}] - skipping')
+                        continue
+                    subsequent_fails += 1
+                    failed_ids.append(b_id)
+                    _logger.error(
+                        f'put_bitstream [{b_id}]: failed. Exception: [Invalid response from put_bitstream: [{resp}]]')
+                    if subsequent_fails >= failure_limit:
+                        raise RuntimeError(
+                            f'Bitstream import stopped after [{subsequent_fails}] subsequent failures (limit={failure_limit}). Last bitstream:[{b_id}]')
+                    continue
                 self._id2uuid[str(b_id)] = resp['id']
                 self._imported["bitstream"] += 1
+                subsequent_fails = 0
                 if b['deleted']:
                     logging.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
             except Exception as e:
                 _logger.error(f'put_bitstream [{b_id}]: failed. Exception: [{str(e)}]')
+                subsequent_fails += 1
+                failed_ids.append(b_id)
+                if subsequent_fails >= failure_limit:
+                    raise RuntimeError(
+                        f'Bitstream import failed for [{b_id}]: {e}') from e
+
+        if failed_ids:
+            _logger.warning(
+                f'Bitstream import completed with [{len(failed_ids)}] failed records. First failures: {failed_ids[:20]}')
+        if skipped_deleted:
+            _logger.info(
+                f'Bitstream import skipped [{skipped_deleted}] deleted records (backend.ignore_deleted_bitstreams=true).')
 
         # do bitstream checksum for the last imported bitstreams
         # these bitstreams can be less than 500, so it is not calculated in a loop
