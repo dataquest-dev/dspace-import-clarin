@@ -33,6 +33,52 @@ def verify_disabled_mailserver():
         sys.exit()
 
 
+def confirm_important_configuration(env: dict):
+    backend = env.get("backend", {})
+    ignore = env.get("ignore", {})
+    licenses = env.get("licenses", {})
+
+    _logger.info("===== Important configuration (please review) =====")
+    _logger.info(
+        f"backend.item_import_workers: [{backend.get('item_import_workers', 1)}] "
+        "(number of parallel workers for item import)"
+    )
+    _logger.info(
+        f"backend.bundle_import_workers: [{backend.get('bundle_import_workers', 1)}] "
+        "(number of parallel workers for bundle import)"
+    )
+    _logger.info(
+        f"backend.ignore_deleted_bitstreams: [{backend.get('ignore_deleted_bitstreams', False)}] "
+        "(True = skip deleted bitstreams during bitstream import)"
+    )
+    _logger.info(
+        f"backend.testing: [{backend.get('testing', False)}] "
+        "(True = enables testing-only fallback behavior)"
+    )
+
+    epersons = ignore.get("epersons", []) or []
+    if epersons:
+        _logger.info(
+            f"ignore.epersons: [{epersons}] "
+            "(these eperson IDs are skipped during import)"
+        )
+
+    _logger.info(
+        f"licenses.to_replace_def_url: [{licenses.get('to_replace_def_url', '')}] "
+        "(prefix to find in imported license definition URLs)"
+    )
+    _logger.info(
+        f"licenses.replace_with_def_url: [{licenses.get('replace_with_def_url', '')}] "
+        "(replacement base URL used for license definition URLs)"
+    )
+
+    try:
+        input("Press ENTER to continue if this configuration is OK (Ctrl+C to abort)...")
+    except EOFError:
+        _logger.warning(
+            "No interactive input available; continuing without confirmation keypress.")
+
+
 def deserialize(resume: bool, obj, cache_file: str) -> bool:
     """
         If cache file exists, deserialize it and return True.
@@ -139,6 +185,7 @@ if __name__ == "__main__":
 
     # just in case
     # verify_disabled_mailserver()
+    confirm_important_configuration(env)
 
     # update based on env
     os.makedirs(env["resume_dir"], exist_ok=True)
@@ -307,10 +354,12 @@ if __name__ == "__main__":
     if deserialize(args.resume, repo.items, cache_file):
         _logger.info(f"Resuming items [{repo.items.imported}]")
         repo.items.import_to(cache_file, dspace_be, repo.handles,
-                             repo.metadatas, repo.epersons, repo.collections)
+                             repo.metadatas, repo.epersons, repo.collections,
+                             env["backend"].get("item_import_workers", 1))
     else:
         repo.items.import_to(cache_file, dspace_be, repo.handles,
-                             repo.metadatas, repo.epersons, repo.collections)
+                             repo.metadatas, repo.epersons, repo.collections,
+                             env["backend"].get("item_import_workers", 1))
         repo.items.serialize(cache_file)
         repo.items.raw_after_import(
             env, repo.raw_db_7, repo.raw_db_dspace_5, repo.metadatas)
@@ -324,7 +373,12 @@ if __name__ == "__main__":
     if deserialize(args.resume, repo.bundles, cache_file):
         _logger.info(f"Resuming bundles [{repo.bundles.imported}]")
     else:
-        repo.bundles.import_to(dspace_be, repo.metadatas, repo.items)
+        repo.bundles.import_to(
+            dspace_be,
+            repo.metadatas,
+            repo.items,
+            env["backend"].get("bundle_import_workers", 1),
+        )
         repo.bundles.serialize(cache_file)
     repo.diff(repo.bundles)
     _logger.info(import_sep)

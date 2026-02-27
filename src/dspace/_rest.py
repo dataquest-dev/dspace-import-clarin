@@ -67,6 +67,10 @@ class rest:
         self._acceptable_resp = []
         self._get_cnt = 0
         self._post_cnt = 0
+        self._user = user
+        self._password = password
+        self._auth = auth
+        self._reauth_minutes = reauth_minutes
         self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
         self._last_auth_ts = 0.0
 
@@ -102,6 +106,15 @@ class rest:
     @property
     def post_cnt(self):
         return self._post_cnt
+
+    def spawn_worker_client(self):
+        return rest(
+            self.endpoint,
+            self._user,
+            self._password,
+            self._auth,
+            self._reauth_minutes,
+        )
 
     # =======
 
@@ -587,6 +600,21 @@ class rest:
                         return js
                     except Exception:
                         return r
+
+                # Handle auth errors (recoverable via re-auth)
+                elif r.status_code in [401, 403]:
+                    last_response = r
+                    if attempt == HTTP_MAX_RETRIES - 1:
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
+                        break
+
+                    _logger.warning(
+                        f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - re-authenticating")
+                    if not self._maybe_reauthenticate(force=True):
+                        _logger.warning("Re-authentication failed")
+                        break
+                    continue
 
                 # Handle HTTP errors
                 elif r.status_code in HTTP_RETRYABLE_CODES:

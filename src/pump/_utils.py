@@ -3,6 +3,7 @@ import os
 import logging
 from datetime import datetime, timezone
 from time import time as time_fnc
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 _logger = logging.getLogger("pump.utils")
@@ -129,3 +130,42 @@ def log_before_import(msg: str, expected: int):
 def log_after_import(msg: str, expected: int, imported: int):
     prefix = "OK " if expected == imported else "!!! WARN !!! "
     _logger.info(f"{prefix}Imported [{imported: >4d}] {msg}")
+
+
+def run_tasks(tasks, worker, workers: int = 1, desc: str = None):
+    tasks = list(tasks or [])
+    workers = max(1, int(workers or 1))
+
+    if workers == 1 or len(tasks) < 2:
+        for task in progress_bar(tasks):
+            try:
+                result = worker(task)
+                yield task, result, None
+            except Exception as e:
+                yield task, None, e
+        return
+
+    futures = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for task in tasks:
+            futures[executor.submit(worker, task)] = task
+
+        iterator = as_completed(futures)
+        try:
+            from tqdm import tqdm
+            iterator = tqdm(
+                iterator,
+                total=len(futures),
+                desc=desc or f"workers:{workers}",
+                mininterval=5,
+            )
+        except Exception:
+            pass
+
+        for future in iterator:
+            task = futures[future]
+            try:
+                result = future.result()
+                yield task, result, None
+            except Exception as e:
+                yield task, None, e

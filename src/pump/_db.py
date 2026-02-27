@@ -638,8 +638,11 @@ class differ:
                                                       [col_name]) if x[0] is not None]
 
             msg = " OK " if len(vals5_cmp) == len(vals7_cmp) else " !!! WARN !!! "
+            extra = ""
+            if str(col_name).lower() in ["withdrawn", "in_archive", "discoverable", "deleted"]:
+                extra = " (bool non-null; includes both true and false)"
             _logger.info(
-                f"Table [{table_name: >20}] {msg}  NON NULL [{col_name:>15}] v5:[{len(vals5_cmp):3}], v7:[{len(vals7_cmp):3}]")
+                f"Table [{table_name: >20}] {msg}  NOT NULL [{col_name:>15}] v5:[{len(vals5_cmp):3}], v7:[{len(vals7_cmp):3}]{extra}")
 
         if sql_info:
             _logger.info(
