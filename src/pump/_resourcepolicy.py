@@ -105,9 +105,7 @@ class resourcepolicies:
                     "skipped_missing_bitstream": 0,
                     "log_critical": f"Cannot find uuid for [{res_type_id}] [{res_id}] [{str(res_policy)}]",
                 }
-            params = {}
-            if res_uuid is not None:
-                params['resource'] = res_uuid
+            params = {'resource': res_uuid}
             # in resource there is action as id, but we need action as text
             actionId = res_policy['action_id']
 

@@ -108,6 +108,10 @@ class db:
             )
         self._conn.reconnect()
 
+    def cursor_context(self):
+        """Return the underlying connection context manager (yields a cursor)."""
+        return self._conn
+
     def _exponential_backoff_sleep(self, attempt: int):
         """Calculate and perform exponential backoff sleep with max delay limit."""
         delay = DB_RETRY_BASE_DELAY * (2 ** attempt)
@@ -360,6 +364,12 @@ class db:
             "SELECT table_name FROM information_schema.tables WHERE is_insertable_into = 'YES' AND table_schema = 'public'")
 
     def table_count(self, exact: bool = False):
+        """Return {table_name: row_count} for all user tables.
+
+        When *exact* is False (default), uses pg_stat_user_tables.n_live_tup
+        which is updated by ANALYZE / autovacuum and can be stale.
+        Set *exact=True* to issue COUNT(*) per table (slower but accurate).
+        """
         if not exact:
             sql = (
                 "SELECT relname, COALESCE(n_live_tup, 0) "
@@ -653,8 +663,10 @@ class differ:
 
         chunk_size_5 = None
         chunk_size_7 = None
-        if str(sql5 or "").strip().lower() == f"select * from {table_name}".lower() \
-           and str(sql7 or "").strip().lower() == f"select * from {table_name}".lower():
+        sql5_normalized = str(sql5 or "").strip().lower()
+        sql7_normalized = str(sql7 or "").strip().lower()
+        expected_sql = f"select * from {table_name}".lower()
+        if sql5_normalized == expected_sql and sql7_normalized == expected_sql:
             try:
                 row_count_5 = db5.fetch_one(f"SELECT COUNT(*) FROM {table_name}")
                 row_count_7 = self.raw_db_7.fetch_one(

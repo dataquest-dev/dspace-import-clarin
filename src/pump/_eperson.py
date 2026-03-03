@@ -205,9 +205,9 @@ class epersons:
         data = {
             "epersons": self._epersons,
             "id2uuid": self._id2uuid,
-            "email2id": self._email2id,
-            "netid2id": self._netid2id,
             "imported": self._imported,
+            # email2id and netid2id are derived indexes rebuilt by _rebuild_indexes()
+            # on deserialize, so they are not persisted.
         }
         serialize(file_str, data)
 

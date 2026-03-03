@@ -9,14 +9,11 @@ from ._utils import read_json, time_method, serialize, deserialize, progress_bar
 
 _logger = logging.getLogger("pump.metadata")
 
-
-def _iter_jsonl(file_name: str):
-    with open(file_name, mode='r', encoding='utf-8') as fin:
-        for line in fin:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
+# Validation-time URL normalization for handle identifiers.
+# The dev prefix is replaced with the canonical HDL prefix so v5/v7
+# values compare equal regardless of the server that minted them.
+_V7_DEV_HANDLE_PREFIX = "http://dev-5.pc:88/handle/"
+_V7_CANONICAL_HANDLE_PREFIX = "http://hdl.handle.net/"
 
 
 def _iter_jsonl_with_progress(file_name: str):
@@ -80,7 +77,7 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
             _logger.debug(
                 f"Cannot find uuid for [{res_type_id}] [{res_id}] [{str(text)}]")
 
-        if field_id in specific_fields.keys():
+        if field_id in specific_fields:
             specific_fields[field_id].append(uuid)
 
         field_id_v7 = repo.metadatas.get_field_id(field_id)
@@ -147,8 +144,8 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
             v7_license_normalized += 1
 
         if field_id == repo.metadatas.V7_FIELD_ID_IDENTIFIER_URI:
-            new_text = text.replace("http://dev-5.pc:88/handle/",
-                                    "http://hdl.handle.net/")
+            new_text = text.replace(_V7_DEV_HANDLE_PREFIX,
+                                    _V7_CANONICAL_HANDLE_PREFIX)
             if new_text != text:
                 v7_handle_normalized += 1
             text = new_text
@@ -715,26 +712,8 @@ class metadatas:
             key += '.' + field_js['qualifier']
         return key
 
-    def _get_key_v2(self, val):
-        """
-            Using data.
-        """
-        int_meta_field_id = val['metadata_field_id']
-        field_js = self._fields_id2js_v5.get(int_meta_field_id, None)
-        if field_js is None:
-            return None
-        # get metadataschema
-        schema_id = field_js["metadata_schema_id"]
-        schema_js = self._schemas_id2js_v5.get(schema_id, None)
-        if schema_js is None:
-            return None
-        # define and insert key and value of dict
-        key = schema_js['short_id'] + '.' + field_js['element']
-        if field_js['qualifier']:
-            key += '.' + field_js['qualifier']
-        return key
-
     def _get_key_v2_by_field_id(self, int_meta_field_id: int):
+        """Resolve a v5 metadata_field_id to its qualified schema key (e.g. 'dc.title.None')."""
         field_js = self._fields_id2js_v5.get(int_meta_field_id, None)
         if field_js is None:
             return None

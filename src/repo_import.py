@@ -99,7 +99,7 @@ def confirm_important_configuration(env: dict):
     try:
         _logger.info(
             "Press ENTER to continue if this configuration is OK (Ctrl+C to abort)...")
-        input("")
+        input()
     except EOFError:
         _logger.warning(
             "No interactive input available; continuing without confirmation keypress.")

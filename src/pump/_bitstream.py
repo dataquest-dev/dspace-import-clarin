@@ -192,6 +192,29 @@ class bitstreams:
             _logger.critical(
                 'Location of assetstore dir is not defined but it should be checked!')
 
+        def _update_progress(pbar_ref):
+            """Centralized progress-bar postfix update."""
+            pbar_ref.set_postfix(
+                imported=self._imported['bitstream'],
+                skipped=skipped_deleted + skipped_already_imported,
+                errored=errored,
+            )
+
+        def _record_error(b_id_val):
+            """Record a failed bitstream id and check cutoff activation."""
+            nonlocal errored, subsequent_errors, cutoff_activated
+            errored += 1
+            subsequent_errors += 1
+            if len(failed_ids) < 20:
+                failed_ids.append(b_id_val)
+            if (ignore_rest_after_subsequent_errors
+                    and subsequent_errors >= subsequent_error_limit
+                    and not cutoff_activated):
+                cutoff_activated = True
+                _logger.warning(
+                    f'Bitstream cutoff activated after [{subsequent_errors}] consecutive put_bitstream errors. '
+                    f'Remaining bitstreams will be treated as errored (as if put_bitstream returned None).')
+
         pbar = progress_bar(self._bs)
         for i, b in enumerate(pbar):
             b_id = b['bitstream_id']
@@ -200,34 +223,20 @@ class bitstreams:
             if str(b_id) in self._id2uuid:
                 skipped_already_imported += 1
                 if skipped_already_imported % 200 == 0 or i == 0:
-                    pbar.set_postfix(
-                        imported=self._imported['bitstream'],
-                        skipped=skipped_deleted + skipped_already_imported,
-                        errored=errored,
-                    )
+                    _update_progress(pbar)
                 continue
 
             if skip_deleted and b_deleted:
                 skipped_deleted += 1
                 if skipped_deleted % 200 == 0 or i == 0:
-                    pbar.set_postfix(
-                        imported=self._imported['bitstream'],
-                        skipped=skipped_deleted + skipped_already_imported,
-                        errored=errored,
-                    )
+                    _update_progress(pbar)
                 continue
 
             if cutoff_activated:
-                errored += 1
                 skipped_due_to_cutoff += 1
-                if len(failed_ids) < 20:
-                    failed_ids.append(b_id)
+                _record_error(b_id)
                 if (i + 1) % 200 == 0:
-                    pbar.set_postfix(
-                        imported=self._imported['bitstream'],
-                        skipped=skipped_deleted + skipped_already_imported,
-                        errored=errored,
-                    )
+                    _update_progress(pbar)
                 continue
 
             # do bitstream checksum
@@ -293,10 +302,10 @@ class bitstreams:
             # NOTE: if it is the testing instance AND we do not have the bitstream
             # use our testing one
             if test_instance and not os.path.exists(full_path):
-                data['sizeBytes'] = 1748
+                data['sizeBytes'] = self.TEST_FALLBACK_SIZE
                 data['checkSum'] = {
                     'checkSumAlgorithm': b['checksum_algorithm'],
-                    'value': 'bb9bdc0b3349e4284e09149f943790b4'
+                    'value': self.TEST_FALLBACK_CHECKSUM
                 }
                 params['internal_id'] = self.TEST_FALLBACK_INTERNAL_ID
 
@@ -316,10 +325,6 @@ class bitstreams:
                         _logger.warning(
                             f'put_bitstream [{b_id}] returned invalid response for deleted bitstream: [{resp}] - skipping')
                         continue
-                    errored += 1
-                    subsequent_errors += 1
-                    if len(failed_ids) < 20:
-                        failed_ids.append(b_id)
                     if diagnostic_invalid_response_logs < 10:
                         diagnostic_invalid_response_logs += 1
                         _logger.error(
@@ -329,17 +334,8 @@ class bitstreams:
                             f'sizeBytes=[{data.get("sizeBytes")}] checkSumAlgorithm=[{(data.get("checkSum") or {}).get("checkSumAlgorithm")}]')
                     _logger.error(
                         f'put_bitstream [{b_id}]: failed. Exception: [Invalid response from put_bitstream: [{resp}]]')
-                    pbar.set_postfix(
-                        imported=self._imported['bitstream'],
-                        skipped=skipped_deleted + skipped_already_imported,
-                        errored=errored,
-                    )
-
-                    if ignore_rest_after_subsequent_errors and subsequent_errors >= subsequent_error_limit and not cutoff_activated:
-                        cutoff_activated = True
-                        _logger.warning(
-                            f'Bitstream cutoff activated after [{subsequent_errors}] consecutive put_bitstream errors. '
-                            f'Remaining bitstreams will be treated as errored (as if put_bitstream returned None).')
+                    _record_error(b_id)
+                    _update_progress(pbar)
                     continue
                 self._id2uuid[str(b_id)] = resp['id']
                 self._imported["bitstream"] += 1
@@ -352,37 +348,16 @@ class bitstreams:
                         f'Bitstream progress checkpoint saved: imported=[{self._imported["bitstream"]}] '
                         f'skipped_deleted=[{skipped_deleted}] resumed=[{skipped_already_imported}]')
                 if b['deleted']:
-                    logging.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
+                    _logger.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
             except Exception as e:
                 _logger.error(f'put_bitstream [{b_id}]: failed. Exception: [{str(e)}]')
-                errored += 1
-                subsequent_errors += 1
-                if len(failed_ids) < 20:
-                    failed_ids.append(b_id)
-                pbar.set_postfix(
-                    imported=self._imported['bitstream'],
-                    skipped=skipped_deleted + skipped_already_imported,
-                    errored=errored,
-                )
-
-                if ignore_rest_after_subsequent_errors and subsequent_errors >= subsequent_error_limit and not cutoff_activated:
-                    cutoff_activated = True
-                    _logger.warning(
-                        f'Bitstream cutoff activated after [{subsequent_errors}] consecutive put_bitstream errors. '
-                        f'Remaining bitstreams will be treated as errored (as if put_bitstream returned None).')
+                _record_error(b_id)
+                _update_progress(pbar)
 
             if (i + 1) % 200 == 0:
-                pbar.set_postfix(
-                    imported=self._imported['bitstream'],
-                    skipped=skipped_deleted + skipped_already_imported,
-                    errored=errored,
-                )
+                _update_progress(pbar)
 
-        pbar.set_postfix(
-            imported=self._imported['bitstream'],
-            skipped=skipped_deleted + skipped_already_imported,
-            errored=errored,
-        )
+        _update_progress(pbar)
 
         if failed_ids:
             _logger.warning(

@@ -56,7 +56,7 @@ def export_table(db, table_name: str, out_f: str):
     with open(out_f, 'w', encoding='utf-8') as fout:
         if not is_jsonl:
             fout.write('[')
-        with db._conn as cursor:
+        with db.cursor_context() as cursor:
             cursor.itersize = chunk_size
             cursor.execute(f'SELECT row_to_json(t)::text FROM "{table_name}" t')
             while True:

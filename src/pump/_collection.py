@@ -1,5 +1,6 @@
 import logging
 import re
+from typing import Optional
 from ._group import groups
 from ._utils import read_json, time_method, serialize, deserialize, progress_bar, log_before_import, log_after_import
 
@@ -23,7 +24,9 @@ class collections:
     ITEM = "ITEM"
     BITSTREAM = "BITSTREAM"
 
-    def __init__(self, col_file_str: str, com2col_file_str: str, metadata_file_str: str = None, col2group: dict = None):
+    def __init__(self, col_file_str: str, com2col_file_str: str,
+                 metadata_file_str: Optional[str] = None,
+                 col2group: Optional[dict] = None):
         self._col = read_json(col_file_str) or []
         self._com2col = read_json(com2col_file_str) or []
         self._imported = {
