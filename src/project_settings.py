@@ -15,9 +15,9 @@ settings = {
         "password": "admin",
         "authentication": True,
         "reauth_minutes": 20,
-        "item_import_workers": 12,
-        "bundle_import_workers": 12,
+        "import_workers": 10,
         "ignore_deleted_bitstreams": True,
+        "bitstream_ignore_rest_after_subsequent_errors": False,
         "testing": True,
     },
 

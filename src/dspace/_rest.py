@@ -1,5 +1,6 @@
 import logging
 import time
+import threading
 # from json import JSONDecodeError
 from ._http import response_to_json
 
@@ -62,7 +63,11 @@ class rest:
 
     def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
                  reauth_minutes: int = 20):
-        _logger.info(f"Initialise connection to DSpace REST backend [{endpoint}]")
+        thread = threading.current_thread()
+        _logger.debug(
+            f"Initialise connection to DSpace REST backend [{endpoint}] "
+            f"thread:[{thread.name}] id:[{thread.ident}]"
+        )
 
         self._acceptable_resp = []
         self._get_cnt = 0
@@ -90,11 +95,20 @@ class rest:
             api_endpoint=endpoint, username=user, password=password)
         if auth:
             if not self.client.authenticate():
-                _logger.error(f'Error auth to dspace REST API at [{endpoint}]!')
+                _logger.error(
+                    f"Error auth to dspace REST API at [{endpoint}] "
+                    f"thread:[{thread.name}] id:[{thread.ident}]!"
+                )
                 raise ConnectionError("Cannot connect to dspace!")
             self._last_auth_ts = time.time()
-            _logger.debug(f"Successfully logged in to [{endpoint}]")
-        _logger.info(f"DSpace REST backend is available at [{endpoint}]")
+            _logger.debug(
+                f"Successfully logged in to [{endpoint}] "
+                f"thread:[{thread.name}] id:[{thread.ident}]"
+            )
+        _logger.debug(
+            f"DSpace REST backend is available at [{endpoint}] "
+            f"thread:[{thread.name}] id:[{thread.ident}]"
+        )
         self.endpoint = endpoint.rstrip("/")
 
     # =======
@@ -592,8 +606,15 @@ class rest:
                     self._handle_circuit_breaker(r.status_code)
                     try:
                         js = None
-                        if len(r.content or '') > 0:
+                        content_len = len(r.content or '')
+                        if content_len > 0:
                             js = response_to_json(r)
+                        else:
+                            if 'clarin/import/core/bitstream' in str(url):
+                                _logger.warning(
+                                    f"POST [{url}] returned HTTP {r.status_code} with empty body; "
+                                    f"bitstream importer expects JSON with id. params=[{param}]"
+                                )
                         if attempt > 0:
                             _logger.debug(
                                 f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
@@ -697,7 +718,7 @@ class rest:
             if self._last_auth_ts > 0 and (time.time() - self._last_auth_ts) < self._reauth_seconds:
                 return True
 
-        _logger.info("Refreshing backend authentication token")
+        _logger.debug("Refreshing backend authentication token")
         ok = self.client.authenticate()
         if ok:
             self._last_auth_ts = time.time()

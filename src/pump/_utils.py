@@ -110,16 +110,31 @@ if os.environ.get("IMPORT_LIMIT", "0") != "0":
     _logger.critical(f"Using import limit [{IMPORT_LIMIT}]")
 
 
-def progress_bar(arr):
-    if len(arr) < 2:
+def progress_bar(arr, desc: str = None, total: int = None):
+    arr_len = None
+    try:
+        arr_len = len(arr)
+    except Exception:
+        arr_len = total
+
+    if arr_len is not None and arr_len < 2:
         return iter(arr)
     try:
         from tqdm import tqdm
     except Exception as e:
         return iter(arr)
 
-    mininterval = 5 if len(arr) < 500 else 10
-    return tqdm(arr, mininterval=mininterval, maxinterval=2 * mininterval)
+    mininterval = 5 if (arr_len is not None and arr_len < 500) else 10
+    kwargs = {
+        "mininterval": mininterval,
+        "maxinterval": 2 * mininterval,
+    }
+    if desc is not None:
+        kwargs["desc"] = desc
+    if total is not None:
+        kwargs["total"] = total
+
+    return tqdm(arr, **kwargs)
 
 
 def log_before_import(msg: str, expected: int):

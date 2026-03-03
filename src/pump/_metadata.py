@@ -52,6 +52,11 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
 
     rec_complex_funds = re.compile("(euFunds|nationalFunds|ownFunds|@@Other)")
     v5data_new = []
+    v5_dropped_unknown_year = 0
+    v5_dropped_ignored_or_replaced = 0
+    v5_dropped_group_titles = 0
+    v5_complex_normalized = 0
+    v5_license_normalized = 0
     V5_FIELD_ID_APPROX_DATE = repo.metadatas.get_field_id_by_name_v5(
         "approximateDate.issued")
     specific_fields = {
@@ -59,13 +64,15 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
         repo.metadatas.V5_DATE_ISSUED: [],
     }
 
-    for res_id, res_type_id, text, field_id in v5data:
+    for res_id, res_type_id, text, field_id in progress_bar(v5data, desc="Normalize metadatavalue v5"):
         # ignore '0000', 15 -> we do not store unknown dates
         if field_id == repo.metadatas.V5_DATE_ISSUED and text == "0000":
+            v5_dropped_unknown_year += 1
             continue
 
         # ignore file preview in metadata
         if field_id in repo.metadatas.ignored_fields or field_id in repo.metadatas.replaced_fields:
+            v5_dropped_ignored_or_replaced += 1
             continue
 
         uuid = repo.uuid(res_type_id, res_id)
@@ -89,13 +96,17 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
                 elif len(splits) == 4 and rec_complex_funds.search(text) is not None:
                     new_splits = [splits[3], splits[1], splits[0], splits[2], '']
             text = ";".join(new_splits)
+            if new_splits != splits:
+                v5_complex_normalized += 1
 
         # license def
         if field_id_v7 == repo.metadatas.V7_FIELD_ID_LIC:
             text = norm_lic(text)
+            v5_license_normalized += 1
 
         # groups have titles in table
         if field_id_v7 == repo.metadatas.V7_FIELD_ID_TITLE and res_type_id == repo.groups.TYPE:
+            v5_dropped_group_titles += 1
             continue
 
         text = norm_text(text)
@@ -106,19 +117,24 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
     to_check_dates_uuids = set(specific_fields[V5_FIELD_ID_APPROX_DATE]).intersection(
         set(specific_fields[repo.metadatas.V5_DATE_ISSUED])
     )
-    for to_check_uuid in to_check_dates_uuids:
-        for i, v in enumerate(v5data_new):
-            if v is None:
+    v5_removed_date_issued_due_to_approx = 0
+    if to_check_dates_uuids:
+        v5data_new_filtered = []
+        for uuid, text, field_id in progress_bar(v5data_new, desc="Normalize metadatavalue cleanup"):
+            if uuid in to_check_dates_uuids and field_id == repo.metadatas.V7_FIELD_DATE_ISSUED:
+                v5_removed_date_issued_due_to_approx += 1
                 continue
-            if to_check_uuid == v[0] and v[2] == repo.metadatas.V7_FIELD_DATE_ISSUED:
-                v5data_new[i] = None
-                break
-    v5data_new = [x for x in v5data_new if x is not None]
+            v5data_new_filtered.append((uuid, text, field_id))
+        v5data_new = v5data_new_filtered
 
     v7data_new = []
-    for uuid, text, field_id in v7data:
+    v7_dropped_lang_added = 0
+    v7_license_normalized = 0
+    v7_handle_normalized = 0
+    for uuid, text, field_id in progress_bar(v7data, desc="Normalize metadatavalue v7"):
         # added language description in addition to language code
         if field_id == repo.metadatas.V7_FIELD_LANG_ADDED:
+            v7_dropped_lang_added += 1
             continue
 
         # should be already ignored # imported preview data
@@ -128,17 +144,29 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
         # license def
         if field_id == repo.metadatas.V7_FIELD_ID_LIC:
             text = norm_lic(text)
+            v7_license_normalized += 1
 
         if field_id == repo.metadatas.V7_FIELD_ID_IDENTIFIER_URI:
-            text = text.replace("http://dev-5.pc:88/handle/", "http://hdl.handle.net/")
+            new_text = text.replace("http://dev-5.pc:88/handle/",
+                                    "http://hdl.handle.net/")
+            if new_text != text:
+                v7_handle_normalized += 1
+            text = new_text
 
         text = norm_text(text)
         v7data_new.append((uuid, text, field_id))
 
     _logger.info(
-        f"Changed v5 metadata values to match v7: {len(v5data)} -> {len(v5data_new)}")
+        f"Changed v5 metadata values to match v7: {len(v5data)} -> {len(v5data_new)} "
+        f"(dropped: unknown-year={v5_dropped_unknown_year}, ignored/replaced={v5_dropped_ignored_or_replaced}, "
+        f"group-title={v5_dropped_group_titles}, approxDate-cleanup={v5_removed_date_issued_due_to_approx}; "
+        f"normalized: complex={v5_complex_normalized}, license={v5_license_normalized})"
+    )
     _logger.info(
-        f"Changed v7 metadata values to match v7: {len(v7data)} -> {len(v7data_new)}")
+        f"Changed v7 metadata values to match v7: {len(v7data)} -> {len(v7data_new)} "
+        f"(dropped: lang-added={v7_dropped_lang_added}; "
+        f"normalized: license={v7_license_normalized}, handle-url={v7_handle_normalized})"
+    )
     return v5data_new, v7data_new
 
 

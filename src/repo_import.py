@@ -38,42 +38,68 @@ def confirm_important_configuration(env: dict):
     ignore = env.get("ignore", {})
     licenses = env.get("licenses", {})
 
-    _logger.info("===== Important configuration (please review) =====")
-    _logger.info(
-        f"backend.item_import_workers: [{backend.get('item_import_workers', 1)}] "
-        "(number of parallel workers for item import)"
-    )
-    _logger.info(
-        f"backend.bundle_import_workers: [{backend.get('bundle_import_workers', 1)}] "
-        "(number of parallel workers for bundle import)"
-    )
-    _logger.info(
-        f"backend.ignore_deleted_bitstreams: [{backend.get('ignore_deleted_bitstreams', False)}] "
-        "(True = skip deleted bitstreams during bitstream import)"
-    )
-    _logger.info(
-        f"backend.testing: [{backend.get('testing', False)}] "
-        "(True = enables testing-only fallback behavior)"
-    )
-
     epersons = ignore.get("epersons", []) or []
+    rows = [
+        (
+            "backend.import_workers",
+            backend.get("import_workers", 1),
+            "parallel workers for item/bundle/resourcepolicy import",
+        ),
+        (
+            "backend.ignore_deleted_bitstreams",
+            backend.get("ignore_deleted_bitstreams", False),
+            "True = skip deleted bitstreams",
+        ),
+        (
+            "backend.bitstream_ignore_rest_after_subsequent_errors",
+            backend.get("bitstream_ignore_rest_after_subsequent_errors", False),
+            "True = after 100 consecutive bitstream errors, treat remaining as errored",
+        ),
+        (
+            "backend.testing",
+            backend.get("testing", False),
+            "True = testing-only fallback behavior",
+        ),
+    ]
+
     if epersons:
-        _logger.info(
-            f"ignore.epersons: [{epersons}] "
-            "(these eperson IDs are skipped during import)"
+        rows.append(
+            (
+                "ignore.epersons",
+                epersons,
+                "eperson IDs skipped during import",
+            )
         )
 
-    _logger.info(
-        f"licenses.to_replace_def_url: [{licenses.get('to_replace_def_url', '')}] "
-        "(prefix to find in imported license definition URLs)"
-    )
-    _logger.info(
-        f"licenses.replace_with_def_url: [{licenses.get('replace_with_def_url', '')}] "
-        "(replacement base URL used for license definition URLs)"
-    )
+    rows.extend([
+        (
+            "licenses.to_replace_def_url",
+            licenses.get("to_replace_def_url", ""),
+            "source URL prefix to be replaced",
+        ),
+        (
+            "licenses.replace_with_def_url",
+            licenses.get("replace_with_def_url", ""),
+            "target URL prefix used for replacement",
+        ),
+    ])
+
+    key_w = max(len(key) for key, _, _ in rows)
+    val_w = max(len(str(value)) for _, value, _ in rows)
+
+    _logger.info("=" * 108)
+    _logger.info("IMPORTANT CONFIGURATION (please review before import)")
+    _logger.info("-" * 108)
+    for key, value, comment in rows:
+        _logger.info(
+            f"{key:<{key_w}} : {str(value):<{val_w}}    # {comment}"
+        )
+    _logger.info("=" * 108)
 
     try:
-        input("Press ENTER to continue if this configuration is OK (Ctrl+C to abort)...")
+        _logger.info(
+            "Press ENTER to continue if this configuration is OK (Ctrl+C to abort)...")
+        input("")
     except EOFError:
         _logger.warning(
             "No interactive input available; continuing without confirmation keypress.")
@@ -350,16 +376,18 @@ if __name__ == "__main__":
     checkpoint_ts = log_checkpoint("license_done", checkpoint_ts)
 
     # import item
+    import_workers = env["backend"].get("import_workers", 1)
+
     cache_file = env["cache"]["item"]
     if deserialize(args.resume, repo.items, cache_file):
         _logger.info(f"Resuming items [{repo.items.imported}]")
         repo.items.import_to(cache_file, dspace_be, repo.handles,
                              repo.metadatas, repo.epersons, repo.collections,
-                             env["backend"].get("item_import_workers", 1))
+                             import_workers)
     else:
         repo.items.import_to(cache_file, dspace_be, repo.handles,
                              repo.metadatas, repo.epersons, repo.collections,
-                             env["backend"].get("item_import_workers", 1))
+                             import_workers)
         repo.items.serialize(cache_file)
         repo.items.raw_after_import(
             env, repo.raw_db_7, repo.raw_db_dspace_5, repo.metadatas)
@@ -377,7 +405,7 @@ if __name__ == "__main__":
             dspace_be,
             repo.metadatas,
             repo.items,
-            env["backend"].get("bundle_import_workers", 1),
+            import_workers,
         )
         repo.bundles.serialize(cache_file)
     repo.diff(repo.bundles)

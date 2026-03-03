@@ -649,10 +649,45 @@ class differ:
                 f"Table [{table_name: >20}]  !!! WARN !!!  SQL request: {sql}")
 
     def diff_table_sql(self, db5, table_name: str, sql5, sql7, compare, process_ftor):
+        _logger.info(f"[SQL-VALIDATION] {table_name}: preparing fetch")
+
+        chunk_size_5 = None
+        chunk_size_7 = None
+        if str(sql5 or "").strip().lower() == f"select * from {table_name}".lower() \
+           and str(sql7 or "").strip().lower() == f"select * from {table_name}".lower():
+            try:
+                row_count_5 = db5.fetch_one(f"SELECT COUNT(*) FROM {table_name}")
+                row_count_7 = self.raw_db_7.fetch_one(
+                    f"SELECT COUNT(*) FROM {table_name}")
+
+                if row_count_5 and row_count_5 > DB_LARGE_TABLE_THRESHOLD:
+                    chunk_size_5 = DB_CHUNK_SIZE
+                if row_count_7 and row_count_7 > DB_LARGE_TABLE_THRESHOLD:
+                    chunk_size_7 = DB_CHUNK_SIZE
+
+                if chunk_size_5 or chunk_size_7:
+                    _logger.info(
+                        f"[SQL-VALIDATION] {table_name}: large table detected "
+                        f"(v5:{row_count_5}, v7:{row_count_7}) -> chunked fetch "
+                        f"(v5:{chunk_size_5 or 'off'}, v7:{chunk_size_7 or 'off'})"
+                    )
+            except Exception as e:
+                _logger.warning(
+                    f"[SQL-VALIDATION] {table_name}: could not pre-check row count, continuing without chunk hint. [{e}]"
+                )
+
+        _logger.info(f"[SQL-VALIDATION] {table_name}: fetching v5 data")
         cols5 = []
-        vals5 = db5.fetch_all(sql5, col_names=cols5)
+        vals5 = db5.fetch_all(sql5, col_names=cols5, chunk_size=chunk_size_5)
+        _logger.info(
+            f"[SQL-VALIDATION] {table_name}: fetched v5 rows [{len(vals5 or [])}]")
+
+        _logger.info(f"[SQL-VALIDATION] {table_name}: fetching v7 data")
         cols7 = []
-        vals7 = self.raw_db_7.fetch_all(sql7, col_names=cols7)
+        vals7 = self.raw_db_7.fetch_all(sql7, col_names=cols7, chunk_size=chunk_size_7)
+        _logger.info(
+            f"[SQL-VALIDATION] {table_name}: fetched v7 rows [{len(vals7 or [])}]")
+
         # special case where we have different names of columns but only one column to compare
         if compare == 0:
             vals5_cmp = [x[0] for x in vals5 if x[0] is not None]
@@ -667,11 +702,13 @@ class differ:
                 vals7, cols7, [compare]) if x[0] is not None]
 
         if process_ftor is not None:
+            _logger.info(f"[SQL-VALIDATION] {table_name}: normalizing datasets")
             vals5_cmp, vals7_cmp = process_ftor(self._repo, vals5_cmp, vals7_cmp)
             # ignored
             if vals5_cmp is None and vals7_cmp is None:
                 return
 
+        _logger.info(f"[SQL-VALIDATION] {table_name}: computing set differences")
         only_in_5 = list(set(vals5_cmp).difference(vals7_cmp))
         only_in_7 = list(set(vals7_cmp).difference(vals5_cmp))
         self._cmp_values(table_name, vals5, only_in_5, vals7, only_in_7, False)

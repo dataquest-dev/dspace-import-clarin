@@ -25,6 +25,9 @@ class bitstreams:
     ]
 
     ignored_fields = ["local.bitstream.redirectToURL"]
+    TEST_FALLBACK_INTERNAL_ID = '57024294293009067626820405177604023574'
+    TEST_FALLBACK_SIZE = 1748
+    TEST_FALLBACK_CHECKSUM = 'bb9bdc0b3349e4284e09149f943790b4'
 
     test_table = [
         {
@@ -91,18 +94,18 @@ class bitstreams:
         if "bs" in self._done:
             _logger.info("Skipping bitstream import")
         else:
-            self._done.append("bs")
-            self._bitstream_import_to(env, dspace, metadatas,
+            self._bitstream_import_to(env, cache_file, dspace, metadatas,
                                       bitstreamformatregistry, bundles, communities, collections)
+            self._done.append("bs")
             self.serialize(cache_file)
 
         if "logos" in self._done:
             _logger.info("Skipping logo import")
         else:
-            self._done.append("logos")
             # add logos (bitstreams) to collections and communities
             self._logo2com_import_to(dspace, communities)
             self._logo2col_import_to(dspace, collections)
+            self._done.append("logos")
             self.serialize(cache_file)
 
     def _logo2col_import_to(self, dspace, collections):
@@ -163,16 +166,25 @@ class bitstreams:
 
         log_after_import(log_key, expected, self.imported_com_logos)
 
-    def _bitstream_import_to(self, env, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
+    def _bitstream_import_to(self, env, cache_file, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
         skip_deleted = env["backend"].get("ignore_deleted_bitstreams", False)
+        ignore_rest_after_subsequent_errors = env["backend"].get(
+            "bitstream_ignore_rest_after_subsequent_errors", False)
+        subsequent_error_limit = 100
         expected = len([b for b in (self._bs or []) if not (
             skip_deleted and b.get('deleted', False))])
         log_key = "bitstreams"
         log_before_import(log_key, expected)
-        failure_limit = 100
-        subsequent_fails = 0
         failed_ids = []
         skipped_deleted = 0
+        skipped_already_imported = 0
+        errored = 0
+        skipped_due_to_cutoff = 0
+        subsequent_errors = 0
+        cutoff_activated = False
+        checkpoint_every = 2000
+        checkpoint_counter = 0
+        diagnostic_invalid_response_logs = 0
 
         test_instance = env["backend"].get("testing", False)
         path_assetstore = env["assetstore"]
@@ -185,10 +197,37 @@ class bitstreams:
             b_id = b['bitstream_id']
             b_deleted = b['deleted']
 
+            if str(b_id) in self._id2uuid:
+                skipped_already_imported += 1
+                if skipped_already_imported % 200 == 0 or i == 0:
+                    pbar.set_postfix(
+                        imported=self._imported['bitstream'],
+                        skipped=skipped_deleted + skipped_already_imported,
+                        errored=errored,
+                    )
+                continue
+
             if skip_deleted and b_deleted:
                 skipped_deleted += 1
-                if hasattr(pbar, 'set_postfix_str') and (skipped_deleted == 1 or skipped_deleted % 25 == 0):
-                    pbar.set_postfix_str(f'skipped_deleted={skipped_deleted}')
+                if skipped_deleted % 200 == 0 or i == 0:
+                    pbar.set_postfix(
+                        imported=self._imported['bitstream'],
+                        skipped=skipped_deleted + skipped_already_imported,
+                        errored=errored,
+                    )
+                continue
+
+            if cutoff_activated:
+                errored += 1
+                skipped_due_to_cutoff += 1
+                if len(failed_ids) < 20:
+                    failed_ids.append(b_id)
+                if (i + 1) % 200 == 0:
+                    pbar.set_postfix(
+                        imported=self._imported['bitstream'],
+                        skipped=skipped_deleted + skipped_already_imported,
+                        errored=errored,
+                    )
                 continue
 
             # do bitstream checksum
@@ -259,7 +298,7 @@ class bitstreams:
                     'checkSumAlgorithm': b['checksum_algorithm'],
                     'value': 'bb9bdc0b3349e4284e09149f943790b4'
                 }
-                params['internal_id'] = '57024294293009067626820405177604023574'
+                params['internal_id'] = self.TEST_FALLBACK_INTERNAL_ID
 
             # if bitstream has bundle, set bundle_id from None to id
             if b_id in self._bs2bundle:
@@ -277,33 +316,89 @@ class bitstreams:
                         _logger.warning(
                             f'put_bitstream [{b_id}] returned invalid response for deleted bitstream: [{resp}] - skipping')
                         continue
-                    subsequent_fails += 1
-                    failed_ids.append(b_id)
+                    errored += 1
+                    subsequent_errors += 1
+                    if len(failed_ids) < 20:
+                        failed_ids.append(b_id)
+                    if diagnostic_invalid_response_logs < 10:
+                        diagnostic_invalid_response_logs += 1
+                        _logger.error(
+                            f'put_bitstream [{b_id}] diagnostics: internal_id=[{params.get("internal_id")}] '
+                            f'bundle_id=[{params.get("bundle_id")}] primaryBundle_id=[{params.get("primaryBundle_id")}] '
+                            f'bitstreamFormat=[{params.get("bitstreamFormat")}] deleted=[{params.get("deleted")}] '
+                            f'sizeBytes=[{data.get("sizeBytes")}] checkSumAlgorithm=[{(data.get("checkSum") or {}).get("checkSumAlgorithm")}]')
                     _logger.error(
                         f'put_bitstream [{b_id}]: failed. Exception: [Invalid response from put_bitstream: [{resp}]]')
-                    if subsequent_fails >= failure_limit:
-                        raise RuntimeError(
-                            f'Bitstream import stopped after [{subsequent_fails}] subsequent failures (limit={failure_limit}). Last bitstream:[{b_id}]')
+                    pbar.set_postfix(
+                        imported=self._imported['bitstream'],
+                        skipped=skipped_deleted + skipped_already_imported,
+                        errored=errored,
+                    )
+
+                    if ignore_rest_after_subsequent_errors and subsequent_errors >= subsequent_error_limit and not cutoff_activated:
+                        cutoff_activated = True
+                        _logger.warning(
+                            f'Bitstream cutoff activated after [{subsequent_errors}] consecutive put_bitstream errors. '
+                            f'Remaining bitstreams will be treated as errored (as if put_bitstream returned None).')
                     continue
                 self._id2uuid[str(b_id)] = resp['id']
                 self._imported["bitstream"] += 1
-                subsequent_fails = 0
+                subsequent_errors = 0
+                checkpoint_counter += 1
+                if checkpoint_counter >= checkpoint_every:
+                    checkpoint_counter = 0
+                    self.serialize(cache_file)
+                    _logger.info(
+                        f'Bitstream progress checkpoint saved: imported=[{self._imported["bitstream"]}] '
+                        f'skipped_deleted=[{skipped_deleted}] resumed=[{skipped_already_imported}]')
                 if b['deleted']:
                     logging.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
             except Exception as e:
                 _logger.error(f'put_bitstream [{b_id}]: failed. Exception: [{str(e)}]')
-                subsequent_fails += 1
-                failed_ids.append(b_id)
-                if subsequent_fails >= failure_limit:
-                    raise RuntimeError(
-                        f'Bitstream import failed for [{b_id}]: {e}') from e
+                errored += 1
+                subsequent_errors += 1
+                if len(failed_ids) < 20:
+                    failed_ids.append(b_id)
+                pbar.set_postfix(
+                    imported=self._imported['bitstream'],
+                    skipped=skipped_deleted + skipped_already_imported,
+                    errored=errored,
+                )
+
+                if ignore_rest_after_subsequent_errors and subsequent_errors >= subsequent_error_limit and not cutoff_activated:
+                    cutoff_activated = True
+                    _logger.warning(
+                        f'Bitstream cutoff activated after [{subsequent_errors}] consecutive put_bitstream errors. '
+                        f'Remaining bitstreams will be treated as errored (as if put_bitstream returned None).')
+
+            if (i + 1) % 200 == 0:
+                pbar.set_postfix(
+                    imported=self._imported['bitstream'],
+                    skipped=skipped_deleted + skipped_already_imported,
+                    errored=errored,
+                )
+
+        pbar.set_postfix(
+            imported=self._imported['bitstream'],
+            skipped=skipped_deleted + skipped_already_imported,
+            errored=errored,
+        )
 
         if failed_ids:
             _logger.warning(
                 f'Bitstream import completed with [{len(failed_ids)}] failed records. First failures: {failed_ids[:20]}')
+        if skipped_already_imported:
+            _logger.info(
+                f'Bitstream import resumed by skipping [{skipped_already_imported}] already imported records from cache.')
         if skipped_deleted:
             _logger.info(
                 f'Bitstream import skipped [{skipped_deleted}] deleted records (backend.ignore_deleted_bitstreams=true).')
+        if errored:
+            _logger.warning(
+                f'Bitstream import skipped/errored [{errored}] records due to invalid/failed responses.')
+        if skipped_due_to_cutoff:
+            _logger.warning(
+                f'Bitstream import treated [{skipped_due_to_cutoff}] trailing records as errored after skipped/errored cutoff.')
 
         # do bitstream checksum for the last imported bitstreams
         # these bitstreams can be less than 500, so it is not calculated in a loop
