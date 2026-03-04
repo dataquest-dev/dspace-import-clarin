@@ -60,6 +60,20 @@ Run `scripts/start.local.dspace.db.bat` or use `scripts/init.dspacedb5.sh` direc
 
 ## Configuration Options
 
+### Backend Settings
+Configure importer runtime behavior in the `"backend"` section of `project_settings.py`:
+
+- **Bitstream error warning threshold**: `"bitstream_subsequent_error_limit"`
+  - Number of consecutive `put_bitstream` failures before an additional testing-mode warning is logged.
+  - Example:
+  ```python
+  "bitstream_subsequent_error_limit": 100
+  ```
+
+- **Testing mode behavior**: `"testing"`
+  - When `"testing": True`, importer uses fallback test bitstream metadata when the source bitstream file is missing.
+  - If repeated `put_bitstream` failures occur, importer logs a warning that includes fallback path/existence diagnostics.
+
 ### Ignore Settings
 Configure items to skip during migration in the `"ignore"` section of `project_settings.py`:
 

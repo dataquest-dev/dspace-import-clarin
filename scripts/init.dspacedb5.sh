@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+ts() {
+	date +"%Y-%m-%d %H:%M:%S"
+}
+
 echo "Starting postgres"
 /usr/local/bin/docker-entrypoint.sh postgres &> ./__postgres.log &
 PID=$!
@@ -61,19 +65,85 @@ run_with_retry() {
 	exit 1
 }
 
+ensure_pv_available() {
+	if command -v pv >/dev/null 2>&1; then
+		return 0
+	fi
+
+	echo "[$(ts)] 'pv' not found; attempting to install for progress display"
+
+	if command -v apt-get >/dev/null 2>&1; then
+		DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1 || true
+		DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pv >/dev/null 2>&1 || true
+	elif command -v apk >/dev/null 2>&1; then
+		apk add --no-cache pv >/dev/null 2>&1 || true
+	fi
+
+	if command -v pv >/dev/null 2>&1; then
+		echo "[$(ts)] Installed 'pv' successfully"
+	else
+		echo "[$(ts)] Could not install 'pv'; continuing with elapsed-time heartbeat progress"
+	fi
+}
+
+import_dump_with_progress() {
+	local db_name="$1"
+	local dump_file="$2"
+	local log_file="$3"
+	local dump_path="../dump/$dump_file"
+	local started_at
+	local finished_at
+	local elapsed
+
+	if [ ! -f "$dump_path" ]; then
+		echo "Missing dump file: $dump_path"
+		exit 1
+	fi
+
+	echo "[$(ts)] Importing $db_name from $dump_file"
+	started_at=$(date +%s)
+
+	if command -v pv >/dev/null 2>&1; then
+		run_with_retry "psql import $db_name (pv)" bash -lc "pv \"$dump_path\" | psql -v ON_ERROR_STOP=1 -U postgres \"$db_name\" > \"$log_file\" 2>&1"
+	else
+		run_with_retry "psql import $db_name" bash -lc '
+			set -euo pipefail
+			dump_path="$1"
+			db_name="$2"
+			log_file="$3"
+			start_epoch=$(date +%s)
+			(
+				while true; do
+					sleep 15
+					now_epoch=$(date +%s)
+					echo "[$(date +"%Y-%m-%d %H:%M:%S")] importing $db_name... $((now_epoch - start_epoch))s elapsed"
+				done
+			) &
+			heartbeat_pid=$!
+			trap "kill $heartbeat_pid >/dev/null 2>&1 || true" EXIT
+			psql -v ON_ERROR_STOP=1 -U postgres "$db_name" < "$dump_path" > "$log_file" 2>&1
+			kill $heartbeat_pid >/dev/null 2>&1 || true
+			wait $heartbeat_pid 2>/dev/null || true
+		' _ "$dump_path" "$db_name" "$log_file"
+	fi
+
+	finished_at=$(date +%s)
+	elapsed=$((finished_at - started_at))
+	echo "[$(ts)] Finished import for $db_name in ${elapsed}s (log: $log_file)"
+}
+
 wait_for_ready 180
+ensure_pv_available
 
 run_with_retry "createuser dspace" createuser --username=postgres dspace
 
-echo "Importing clarin-dspace"
+echo "[$(ts)] Preparing clarin-dspace"
 run_with_retry "createdb clarin-dspace" createdb --username=postgres --owner=dspace --encoding=UNICODE clarin-dspace
-run_with_retry "psql import clarin-dspace" bash -lc "psql -U postgres clarin-dspace < ../dump/clarin-dspace.sql > /dev/null 2>&1"
-run_with_retry "psql import clarin-dspace log" bash -lc "psql -U postgres clarin-dspace < ../dump/clarin-dspace.sql > ./__clarin-dspace.log 2>&1"
+import_dump_with_progress "clarin-dspace" "clarin-dspace.sql" "./__clarin-dspace.log"
 
-echo "Importing clarin-utilities"
+echo "[$(ts)] Preparing clarin-utilities"
 run_with_retry "createdb clarin-utilities" createdb --username=postgres --encoding=UNICODE clarin-utilities
-run_with_retry "psql import clarin-utilities" bash -lc "psql -U postgres clarin-utilities < ../dump/clarin-utilities.sql > /dev/null 2>&1"
-run_with_retry "psql import clarin-utilities log" bash -lc "psql -U postgres clarin-utilities < ../dump/clarin-utilities.sql > ./__clarin-utilities.log 2>&1"
+import_dump_with_progress "clarin-utilities" "clarin-utilities.sql" "./__clarin-utilities.log"
 
 echo "Done, starting psql"
 

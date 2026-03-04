@@ -4,6 +4,7 @@ import json
 import os
 import time
 from typing import Optional
+from tqdm import tqdm
 
 from ._utils import read_json, time_method, serialize, deserialize, progress_bar, log_before_import, log_after_import
 
@@ -293,9 +294,27 @@ class metadatas:
 
         # normalize + filter + build indexes in a single pass to avoid extra large-list copies
         kept_len = 0
-        progress_every_rows = 100000
-        progress_every_seconds = 8
-        last_progress_ts = started
+        pbar = None
+        last_bytes = 0
+        jsonl_total_bytes = os.path.getsize(value_file_v5_str) if is_jsonl else 0
+        if is_jsonl:
+            pbar = tqdm(
+                total=jsonl_total_bytes if jsonl_total_bytes > 0 else None,
+                desc="Index metadatavalue",
+                unit="B",
+                unit_scale=True,
+                mininterval=1,
+                dynamic_ncols=True,
+            )
+        else:
+            pbar = tqdm(
+                total=orig_len if orig_len > 0 else None,
+                desc="Index metadatavalue",
+                unit="rows",
+                mininterval=1,
+                dynamic_ncols=True,
+            )
+
         for idx, val in enumerate(values_iter, start=1):
             bytes_read = 0
             total_bytes = 0
@@ -337,21 +356,16 @@ class metadatas:
                 d['item_id'] = val['resource_id']
                 self._versions[text_value] = d
 
-            now = time.perf_counter()
-            if idx % progress_every_rows == 0 or (now - last_progress_ts) >= progress_every_seconds:
-                elapsed = now - started
-                speed = idx / elapsed if elapsed > 0 else 0.0
+            if pbar is not None:
                 if is_jsonl:
-                    pct = (bytes_read * 100.0 / total_bytes) if total_bytes > 0 else 0.0
-                    _logger.info(
-                        f"[METADATA] indexing progress rows={idx} kept={kept_len} pct={pct:.1f}% speed={speed:.0f} rows/s"
-                    )
+                    delta = max(0, bytes_read - last_bytes)
+                    if delta > 0:
+                        pbar.update(delta)
+                        last_bytes = bytes_read
                 else:
-                    pct = (idx * 100.0 / orig_len) if orig_len > 0 else 0.0
-                    _logger.info(
-                        f"[METADATA] indexing progress rows={idx}/{orig_len} kept={kept_len} pct={pct:.1f}% speed={speed:.0f} rows/s"
-                    )
-                last_progress_ts = now
+                    pbar.update(1)
+
+        pbar.close()
 
         if orig_len != kept_len:
             _logger.warning(

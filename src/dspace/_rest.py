@@ -130,6 +130,14 @@ class rest:
             self._reauth_minutes,
         )
 
+    def verify_authentication(self, force: bool = True):
+        """Validate backend login/token before critical operations."""
+        ok = self._maybe_reauthenticate(force=force)
+        if not ok:
+            raise ConnectionError(
+                f"Cannot authenticate to DSpace backend [{self.endpoint}]")
+        return True
+
     # =======
 
     def push_acceptable(self, arr: list):

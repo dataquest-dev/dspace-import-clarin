@@ -168,9 +168,9 @@ class bitstreams:
 
     def _bitstream_import_to(self, env, cache_file, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
         skip_deleted = env["backend"].get("ignore_deleted_bitstreams", False)
-        ignore_rest_after_subsequent_errors = env["backend"].get(
-            "bitstream_ignore_rest_after_subsequent_errors", False)
-        subsequent_error_limit = 100
+        test_instance = env["backend"].get("testing", False)
+        subsequent_error_limit = env["backend"].get(
+            "bitstream_subsequent_error_limit", 100)
         expected = len([b for b in (self._bs or []) if not (
             skip_deleted and b.get('deleted', False))])
         log_key = "bitstreams"
@@ -179,18 +179,28 @@ class bitstreams:
         skipped_deleted = 0
         skipped_already_imported = 0
         errored = 0
-        skipped_due_to_cutoff = 0
         subsequent_errors = 0
-        cutoff_activated = False
+        repeated_error_warning_issued = False
         checkpoint_every = 2000
         checkpoint_counter = 0
         diagnostic_invalid_response_logs = 0
 
-        test_instance = env["backend"].get("testing", False)
         path_assetstore = env["assetstore"]
+        fallback_rel_path = None
+        fallback_full_path = None
+        fallback_exists = None
         if test_instance and path_assetstore == "":
             _logger.critical(
                 'Location of assetstore dir is not defined but it should be checked!')
+        if test_instance and path_assetstore:
+            fallback_rel_path = self.bitstream_path(self.TEST_FALLBACK_INTERNAL_ID)
+            fallback_full_path = os.path.join(path_assetstore, fallback_rel_path)
+            fallback_exists = os.path.exists(fallback_full_path)
+            if not fallback_exists:
+                _logger.warning(
+                    f'backend.testing=true requires testing bitstream in server assetstore at '
+                    f'[{fallback_rel_path}] (full path: [{fallback_full_path}]). '
+                    f'If missing, put_bitstream may fail repeatedly with empty/invalid responses.')
 
         def _update_progress(pbar_ref):
             """Centralized progress-bar postfix update."""
@@ -201,19 +211,22 @@ class bitstreams:
             )
 
         def _record_error(b_id_val):
-            """Record a failed bitstream id and check cutoff activation."""
-            nonlocal errored, subsequent_errors, cutoff_activated
+            """Record a failed bitstream id and emit diagnostics for repeated failures in testing mode."""
+            nonlocal errored, subsequent_errors, repeated_error_warning_issued
             errored += 1
             subsequent_errors += 1
             if len(failed_ids) < 20:
                 failed_ids.append(b_id_val)
-            if (ignore_rest_after_subsequent_errors
+            if (test_instance
                     and subsequent_errors >= subsequent_error_limit
-                    and not cutoff_activated):
-                cutoff_activated = True
+                    and not repeated_error_warning_issued):
+                repeated_error_warning_issued = True
+                exists_text = str(
+                    fallback_exists) if fallback_exists is not None else 'unknown (assetstore path not configured)'
                 _logger.warning(
-                    f'Bitstream cutoff activated after [{subsequent_errors}] consecutive put_bitstream errors. '
-                    f'Remaining bitstreams will be treated as errored (as if put_bitstream returned None).')
+                    f'Many consecutive put_bitstream errors detected in testing mode [{subsequent_errors}]. '
+                    f'Verify testing fallback bitstream on server assetstore: '
+                    f'relative_path=[{fallback_rel_path}] full_path=[{fallback_full_path}] exists=[{exists_text}].')
 
         pbar = progress_bar(self._bs)
         for i, b in enumerate(pbar):
@@ -229,13 +242,6 @@ class bitstreams:
             if skip_deleted and b_deleted:
                 skipped_deleted += 1
                 if skipped_deleted % 200 == 0 or i == 0:
-                    _update_progress(pbar)
-                continue
-
-            if cutoff_activated:
-                skipped_due_to_cutoff += 1
-                _record_error(b_id)
-                if (i + 1) % 200 == 0:
                     _update_progress(pbar)
                 continue
 
@@ -371,9 +377,6 @@ class bitstreams:
         if errored:
             _logger.warning(
                 f'Bitstream import skipped/errored [{errored}] records due to invalid/failed responses.')
-        if skipped_due_to_cutoff:
-            _logger.warning(
-                f'Bitstream import treated [{skipped_due_to_cutoff}] trailing records as errored after skipped/errored cutoff.')
 
         # do bitstream checksum for the last imported bitstreams
         # these bitstreams can be less than 500, so it is not calculated in a loop

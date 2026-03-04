@@ -35,6 +35,23 @@ echo Local DB5: 127.0.0.1:%LOCAL_DB5_PORT%
 echo Forwarded DB7: 127.0.0.1:%LOCAL_DB7_PORT% -> %REMOTE_HOST%:%REMOTE_DB7_PORT%
 ```
 
+### Testing bitstream prerequisite
+
+If `backend.testing=true`, the fallback testing bitstream must exist in the server assetstore with the proper internal-id path.
+If it is missing, you can get many `put_bitstream` errors.
+
+Check assetstore files in the server container:
+
+```bash
+docker exec -it dspace5 /bin/bash -c "ls -lahR /dspace/assetstore"
+```
+
+On `dev-5.pc`, if the testing instance is `dspace5`, copy Oxford assetstore files to the docker volume:
+
+```bash
+root@dev-5:/var/lib/docker/volumes/dspace-5_assetstore/_data# cp -R /opt/dspace-data/clarin-dspace-oxford/assetstore/* ./
+```
+
 3. execute
 
 ```

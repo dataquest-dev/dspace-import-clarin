@@ -51,9 +51,9 @@ def confirm_important_configuration(env: dict):
             "True = skip deleted bitstreams",
         ),
         (
-            "backend.bitstream_ignore_rest_after_subsequent_errors",
-            backend.get("bitstream_ignore_rest_after_subsequent_errors", False),
-            "True = after 100 consecutive bitstream errors, treat remaining as errored",
+            "backend.bitstream_subsequent_error_limit",
+            backend.get("bitstream_subsequent_error_limit", 100),
+            "consecutive error threshold for testing-mode warning",
         ),
         (
             "backend.testing",
@@ -244,6 +244,10 @@ if __name__ == "__main__":
 
     import_sep = f"\n{40 * '*'}\n"
     _logger.info("Starting import")
+
+    _logger.info("Verifying backend authentication before first validation")
+    dspace_be.verify_authentication(force=True)
+    checkpoint_ts = log_checkpoint("backend_auth_verified", checkpoint_ts)
 
     # import handles
     cache_file = env["cache"]["handle"]

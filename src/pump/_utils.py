@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from time import time as time_fnc
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 
 _logger = logging.getLogger("pump.utils")
@@ -119,10 +120,6 @@ def progress_bar(arr, desc: str = None, total: int = None):
 
     if arr_len is not None and arr_len < 2:
         return iter(arr)
-    try:
-        from tqdm import tqdm
-    except Exception as e:
-        return iter(arr)
 
     mininterval = 5 if (arr_len is not None and arr_len < 500) else 10
     kwargs = {
@@ -165,17 +162,12 @@ def run_tasks(tasks, worker, workers: int = 1, desc: str = None):
         for task in tasks:
             futures[executor.submit(worker, task)] = task
 
-        iterator = as_completed(futures)
-        try:
-            from tqdm import tqdm
-            iterator = tqdm(
-                iterator,
-                total=len(futures),
-                desc=desc or f"workers:{workers}",
-                mininterval=5,
-            )
-        except Exception:
-            pass
+        iterator = tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc=desc or f"workers:{workers}",
+            mininterval=5,
+        )
 
         for future in iterator:
             task = futures[future]

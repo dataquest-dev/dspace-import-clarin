@@ -17,7 +17,7 @@ settings = {
         "reauth_minutes": 20,
         "import_workers": 10,
         "ignore_deleted_bitstreams": True,
-        "bitstream_ignore_rest_after_subsequent_errors": False,
+        "bitstream_subsequent_error_limit": 100,
         "testing": True,
     },
 
