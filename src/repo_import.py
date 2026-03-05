@@ -51,11 +51,6 @@ def confirm_important_configuration(env: dict):
             "True = skip deleted bitstreams",
         ),
         (
-            "backend.bitstream_subsequent_error_limit",
-            backend.get("bitstream_subsequent_error_limit", 100),
-            "consecutive error threshold for testing-mode warning",
-        ),
-        (
             "backend.testing",
             backend.get("testing", False),
             "True = testing-only fallback behavior",

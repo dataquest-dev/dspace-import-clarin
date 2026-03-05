@@ -169,8 +169,6 @@ class bitstreams:
     def _bitstream_import_to(self, env, cache_file, dspace, metadatas, bitstreamformatregistry, bundles, communities, collections):
         skip_deleted = env["backend"].get("ignore_deleted_bitstreams", False)
         test_instance = env["backend"].get("testing", False)
-        subsequent_error_limit = env["backend"].get(
-            "bitstream_subsequent_error_limit", 100)
         expected = len([b for b in (self._bs or []) if not (
             skip_deleted and b.get('deleted', False))])
         log_key = "bitstreams"
@@ -218,7 +216,7 @@ class bitstreams:
             if len(failed_ids) < 20:
                 failed_ids.append(b_id_val)
             if (test_instance
-                    and subsequent_errors >= subsequent_error_limit
+                    and subsequent_errors >= 100
                     and not repeated_error_warning_issued):
                 repeated_error_warning_issued = True
                 exists_text = str(
