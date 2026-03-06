@@ -226,6 +226,12 @@ class groups:
         Mapped tables: epersongroup2eperson
     """
 
+    validate_table = [
+        ["epersongroup2eperson", {
+            "nonnull": ["eperson_group_id", "eperson_id"],
+        }],
+    ]
+
     def __init__(self, egroups_file_str: str):
         self._groups = read_json(egroups_file_str) or []
         self._imported = {

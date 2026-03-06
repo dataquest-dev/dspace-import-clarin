@@ -11,6 +11,35 @@ class resourcepolicies:
             delete from resourcepolicy ;
     """
 
+    validate_table = [
+        ["resourcepolicy", {
+            "sql": {
+                "5": "select count(*) from resourcepolicy where action_id = 0 and "
+                     "epersongroup_id in (select resource_id from metadatavalue where "
+                     "text_value = 'Anonymous' and resource_type_id = 6) "
+                     "and start_date is not null and resource_type_id = 0",
+                "7": "select count(*) from resourcepolicy "
+                     "where action_id = 0 and epersongroup_id in "
+                     "(select uuid from epersongroup where name = 'Anonymous') "
+                     "and start_date is not null and resource_type_id = 0",
+                "compare": 0,
+            }
+        }],
+        ["resourcepolicy", {
+            "sql": {
+                "5": "select count(*) from resourcepolicy where action_id = 0 and "
+                     "epersongroup_id in (select resource_id from metadatavalue where "
+                     "text_value = 'Anonymous' and resource_type_id = 6) "
+                     "and start_date is not null and resource_type_id = 2",
+                "7": "select count(*) from resourcepolicy "
+                     "where action_id = 0 and epersongroup_id in "
+                     "(select uuid from epersongroup where name = 'Anonymous') "
+                     "and start_date is not null and resource_type_id = 2",
+                "compare": 0,
+            }
+        }],
+    ]
+
     test_table = [
         {
             "name": "res_policy_bitstream_embargo",
@@ -70,6 +99,7 @@ class resourcepolicies:
         workers = max(1, int(backend.get("import_workers", 1) or 1))
         failed = 0
         skipped_missing_bitstream = 0
+        skipped_deleted_target = 0
 
         if workers > 1 and expected > 1:
             _logger.info(
@@ -87,8 +117,8 @@ class resourcepolicies:
                     return {
                         "imported": False,
                         "failed": 0,
+                        "skipped_deleted_target": 1,
                         "skipped_missing_bitstream": 0,
-                        "log_info": f"Cannot import resource policy [{res_id}] for the record with type [{res_type_id}] that has already been deleted.",
                     }
 
             res_uuid = repo.uuid(res_type_id, res_id)
@@ -221,15 +251,37 @@ class resourcepolicies:
             return {
                 "imported": False,
                 "failed": 1,
+                "skipped_deleted_target": 0,
                 "skipped_missing_bitstream": 0,
                 "log_error": f"Cannot import resource policy {res_policy['policy_id']} because neither eperson nor group is defined",
             }
+
+        progress_stats = {
+            "skipped_deleted_target": 0,
+            "skipped_missing_bitstream": 0,
+        }
+
+        def on_result(_task, result, _err, iterator):
+            if result is not None:
+                progress_stats["skipped_deleted_target"] += int(
+                    result.get("skipped_deleted_target", 0) or 0)
+                progress_stats["skipped_missing_bitstream"] += int(
+                    result.get("skipped_missing_bitstream", 0) or 0)
+
+            if hasattr(iterator, "set_postfix"):
+                postfix = {
+                    "skipped_deleted": progress_stats["skipped_deleted_target"],
+                }
+                if progress_stats["skipped_missing_bitstream"] > 0:
+                    postfix["skipped_missing_bitstream"] = progress_stats["skipped_missing_bitstream"]
+                iterator.set_postfix(postfix, refresh=False)
 
         for i, (task, result, err) in enumerate(run_tasks(
             self._respol,
             worker,
             workers=workers,
             desc=f"Importing resourcepolicies ({workers} workers)",
+            on_result=on_result,
         )):
             if err is not None:
                 raise err
@@ -245,10 +297,18 @@ class resourcepolicies:
                 self._imported["respol"] += 1
 
             failed += int(result.get("failed", 0) or 0)
+            skipped_deleted_target += int(
+                result.get("skipped_deleted_target", 0) or 0)
             skipped_missing_bitstream += int(
                 result.get("skipped_missing_bitstream", 0) or 0)
 
         extra = f"{log_key}, failed:[{failed}]"
+        if skipped_deleted_target > 0:
+            extra = f"{extra}, skipped_deleted_target:[{skipped_deleted_target}]"
+            _logger.info(
+                "Skipped resource policies targeting deleted Item/Bundle records "
+                f"(count:[{skipped_deleted_target}])."
+            )
         if skipped_missing_bitstream > 0:
             extra = f"{extra}, skipped_missing_bitstream:[{skipped_missing_bitstream}]"
         log_after_import(extra, expected, self.imported)

@@ -46,92 +46,149 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
     def norm_text(text):
         # this should not be a reasonable list of replacements but rather
         # instance specific use cases
-        return text.replace("\u2028", "\n").rstrip()
+        if "\u2028" in text:
+            text = text.replace("\u2028", "\n")
+        if len(text) > 0 and text[-1].isspace():
+            text = text.rstrip()
+        return text
 
-    rec_complex_funds = re.compile("(euFunds|nationalFunds|ownFunds|@@Other)")
+    md = repo.metadatas
+    get_field_id = md.get_field_id
+    ignored_or_replaced = set(md.ignored_fields) | set(md.replaced_fields)
+    group_type = repo.groups.TYPE
+    v5_date_issued = md.V5_DATE_ISSUED
+    v5_field_id_approx_date = md.get_field_id_by_name_v5("approximateDate.issued")
+    v7_field_date_issued = md.V7_FIELD_DATE_ISSUED
+    v7_field_id_lic = md.V7_FIELD_ID_LIC
+    v7_field_id_title = md.V7_FIELD_ID_TITLE
+    v7_field_id_provenance = md.V7_FIELD_ID_PROVENANCE
+    v7_field_id_lang_added = md.V7_FIELD_LANG_ADDED
+    v7_field_id_identifier_uri = md.V7_FIELD_ID_IDENTIFIER_URI
+    debug_enabled = _logger.isEnabledFor(logging.DEBUG)
+
+    def to_int_key_map(source: dict) -> dict:
+        out = {}
+        for key, value in (source or {}).items():
+            try:
+                out[int(key)] = value
+            except Exception:
+                continue
+        return out
+
+    field_id_v5_to_v7 = to_int_key_map(getattr(md, "_fields_id2v7id", {}))
+
+    uuid_map_by_type = {
+        repo.communities.TYPE: to_int_key_map(getattr(repo.communities, "_id2uuid", {})),
+        repo.collections.TYPE: to_int_key_map(getattr(repo.collections, "_id2uuid", {})),
+        repo.items.TYPE: to_int_key_map(getattr(repo.items, "_id2uuid", {})),
+        repo.bitstreams.TYPE: to_int_key_map(getattr(repo.bitstreams, "_id2uuid", {})),
+        repo.bundles.TYPE: to_int_key_map(getattr(repo.bundles, "_id2uuid", {})),
+        repo.epersons.TYPE: to_int_key_map(getattr(repo.epersons, "_id2uuid", {})),
+        group_type: to_int_key_map(getattr(repo.groups, "_id2uuid", {})),
+    }
+
     v5data_new = []
+    v5data_new_append = v5data_new.append
+    norm_text_local = norm_text
+    norm_lic_local = norm_lic
     v5_dropped_unknown_year = 0
     v5_dropped_ignored_or_replaced = 0
     v5_dropped_group_titles = 0
     v5_complex_normalized = 0
     v5_license_normalized = 0
-    V5_FIELD_ID_APPROX_DATE = repo.metadatas.get_field_id_by_name_v5(
-        "approximateDate.issued")
     specific_fields = {
-        V5_FIELD_ID_APPROX_DATE: [],
-        repo.metadatas.V5_DATE_ISSUED: [],
+        v5_field_id_approx_date: set(),
+        v5_date_issued: set(),
     }
 
     for res_id, res_type_id, text, field_id in progress_bar(v5data, desc="Normalize metadatavalue v5"):
         # ignore '0000', 15 -> we do not store unknown dates
-        if field_id == repo.metadatas.V5_DATE_ISSUED and text == "0000":
+        if field_id == v5_date_issued and text == "0000":
             v5_dropped_unknown_year += 1
             continue
 
         # ignore file preview in metadata
-        if field_id in repo.metadatas.ignored_fields or field_id in repo.metadatas.replaced_fields:
+        if field_id in ignored_or_replaced:
             v5_dropped_ignored_or_replaced += 1
             continue
 
-        uuid = repo.uuid(res_type_id, res_id)
-        if uuid is None:
+        type_uuid_map = uuid_map_by_type.get(res_type_id)
+        raw_uuid = type_uuid_map.get(res_id) if type_uuid_map is not None else None
+        if res_type_id == group_type:
+            uuid = raw_uuid[0] if isinstance(
+                raw_uuid, list) and len(raw_uuid) > 0 else None
+        else:
+            uuid = raw_uuid
+        if uuid is None and debug_enabled:
             _logger.debug(
-                f"Cannot find uuid for [{res_type_id}] [{res_id}] [{str(text)}]")
+                "Cannot find uuid for [%s] [%s] [%s]",
+                res_type_id,
+                res_id,
+                text,
+            )
 
         if field_id in specific_fields:
-            specific_fields[field_id].append(uuid)
+            specific_fields[field_id].add(uuid)
 
-        field_id_v7 = repo.metadatas.get_field_id(field_id)
+        field_id_v7 = field_id_v5_to_v7.get(field_id)
+        if field_id_v7 is None:
+            field_id_v7 = get_field_id(field_id)
         #
         if "@@" in text:
             splits = text.split("@@")
             new_splits = splits
 
-            if field_id_v7 not in (repo.metadatas.V7_FIELD_ID_PROVENANCE,):
+            if field_id_v7 != v7_field_id_provenance:
                 if len(splits) == 5:
                     new_splits = [splits[-2], splits[1], splits[0], splits[2], splits[-1]]
                 # special case - older complex field impl.
-                elif len(splits) == 4 and rec_complex_funds.search(text) is not None:
+                elif len(splits) == 4 and (
+                    "euFunds" in text
+                    or "nationalFunds" in text
+                    or "ownFunds" in text
+                    or "@@Other" in text
+                ):
                     new_splits = [splits[3], splits[1], splits[0], splits[2], '']
             text = ";".join(new_splits)
             if new_splits != splits:
                 v5_complex_normalized += 1
 
         # license def
-        if field_id_v7 == repo.metadatas.V7_FIELD_ID_LIC:
-            text = norm_lic(text)
+        if field_id_v7 == v7_field_id_lic:
+            text = norm_lic_local(text)
             v5_license_normalized += 1
 
         # groups have titles in table
-        if field_id_v7 == repo.metadatas.V7_FIELD_ID_TITLE and res_type_id == repo.groups.TYPE:
+        if field_id_v7 == v7_field_id_title and res_type_id == group_type:
             v5_dropped_group_titles += 1
             continue
 
-        text = norm_text(text)
-        v5data_new.append((uuid, text, field_id_v7))
+        text = norm_text_local(text)
+        v5data_new_append((uuid, text, field_id_v7))
 
     # cleanup
     # has local.approximateDate.issued -> ignore dc.date.issued
-    to_check_dates_uuids = set(specific_fields[V5_FIELD_ID_APPROX_DATE]).intersection(
-        set(specific_fields[repo.metadatas.V5_DATE_ISSUED])
+    to_check_dates_uuids = specific_fields[v5_field_id_approx_date].intersection(
+        specific_fields[v5_date_issued]
     )
     v5_removed_date_issued_due_to_approx = 0
     if to_check_dates_uuids:
-        v5data_new_filtered = []
-        for uuid, text, field_id in progress_bar(v5data_new, desc="Normalize metadatavalue cleanup"):
-            if uuid in to_check_dates_uuids and field_id == repo.metadatas.V7_FIELD_DATE_ISSUED:
-                v5_removed_date_issued_due_to_approx += 1
-                continue
-            v5data_new_filtered.append((uuid, text, field_id))
-        v5data_new = v5data_new_filtered
+        before_cleanup_len = len(v5data_new)
+        v5data_new = [
+            (uuid, text, field_id)
+            for uuid, text, field_id in v5data_new
+            if not (uuid in to_check_dates_uuids and field_id == v7_field_date_issued)
+        ]
+        v5_removed_date_issued_due_to_approx = before_cleanup_len - len(v5data_new)
 
     v7data_new = []
+    v7data_new_append = v7data_new.append
     v7_dropped_lang_added = 0
     v7_license_normalized = 0
     v7_handle_normalized = 0
     for uuid, text, field_id in progress_bar(v7data, desc="Normalize metadatavalue v7"):
         # added language description in addition to language code
-        if field_id == repo.metadatas.V7_FIELD_LANG_ADDED:
+        if field_id == v7_field_id_lang_added:
             v7_dropped_lang_added += 1
             continue
 
@@ -140,19 +197,19 @@ def _metadatavalue_process(repo, v5data: list, v7data: list):
         #     continue
 
         # license def
-        if field_id == repo.metadatas.V7_FIELD_ID_LIC:
-            text = norm_lic(text)
+        if field_id == v7_field_id_lic:
+            text = norm_lic_local(text)
             v7_license_normalized += 1
 
-        if field_id == repo.metadatas.V7_FIELD_ID_IDENTIFIER_URI:
+        if field_id == v7_field_id_identifier_uri:
             new_text = text.replace(_V7_DEV_HANDLE_PREFIX,
                                     _V7_CANONICAL_HANDLE_PREFIX)
             if new_text != text:
                 v7_handle_normalized += 1
             text = new_text
 
-        text = norm_text(text)
-        v7data_new.append((uuid, text, field_id))
+        text = norm_text_local(text)
+        v7data_new_append((uuid, text, field_id))
 
     _logger.info(
         f"Changed v5 metadata values to match v7: {len(v5data)} -> {len(v5data_new)} "
@@ -368,8 +425,22 @@ class metadatas:
         pbar.close()
 
         if orig_len != kept_len:
+            ignored_field_names = []
+            for field_id in self.ignored_fields:
+                field = self._fields_id2js_v5.get(field_id)
+                if field is None:
+                    ignored_field_names.append(f"<unknown:{field_id}>")
+                    continue
+
+                schema_short_id = self._schema_id2short_id_v5.get(
+                    field['metadata_schema_id'], "?")
+                ignored_field_names.append(
+                    f"{schema_short_id}.{field['element']}.{field['qualifier']}"
+                )
+
             _logger.warning(
-                f"Ignoring metadata fields [{self.ignored_fields}], len:[{orig_len}->{kept_len}]")
+                f"Ignoring metadata fields [{self.ignored_fields}] names:[{ignored_field_names}], "
+                f"len:[{orig_len}->{kept_len}]")
 
         # release large source array reference as early as possible
         if not is_jsonl:

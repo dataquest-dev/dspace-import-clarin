@@ -140,20 +140,27 @@ def log_before_import(msg: str, expected: int):
 
 
 def log_after_import(msg: str, expected: int, imported: int):
-    prefix = "OK " if expected == imported else "!!! WARN !!! "
-    _logger.info(f"{prefix}Imported [{imported: >4d}] {msg}")
+    is_ok = expected == imported
+    status = "OK" if is_ok else "WARN"
+    counts = f"expected:[{expected:>8}], imported:[{imported:>8}]"
+    _logger.info(f"{status:<12} {counts}  {msg}")
 
 
-def run_tasks(tasks, worker, workers: int = 1, desc: str = None):
+def run_tasks(tasks, worker, workers: int = 1, desc: str = None, on_result=None):
     tasks = list(tasks or [])
     workers = max(1, int(workers or 1))
 
     if workers == 1 or len(tasks) < 2:
-        for task in progress_bar(tasks):
+        iterator = progress_bar(tasks, desc=desc)
+        for task in iterator:
             try:
                 result = worker(task)
+                if on_result is not None:
+                    on_result(task, result, None, iterator)
                 yield task, result, None
             except Exception as e:
+                if on_result is not None:
+                    on_result(task, None, e, iterator)
                 yield task, None, e
         return
 
@@ -173,6 +180,10 @@ def run_tasks(tasks, worker, workers: int = 1, desc: str = None):
             task = futures[future]
             try:
                 result = future.result()
+                if on_result is not None:
+                    on_result(task, result, None, iterator)
                 yield task, result, None
             except Exception as e:
+                if on_result is not None:
+                    on_result(task, None, e, iterator)
                 yield task, None, e

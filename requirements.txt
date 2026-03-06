@@ -6,5 +6,6 @@ pre-commit
 tqdm
 requests-toolbelt
 six
-pysolr~=3.9.0
+pysolr
 psutil
+colorama>=0.4.6

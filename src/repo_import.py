@@ -135,9 +135,20 @@ def _rss_mb() -> float:
         return -1.0
 
 
-def log_checkpoint(label: str, since_ts: float) -> float:
+def _format_elapsed_human(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    days, rem = divmod(total_seconds, 24 * 60 * 60)
+    hours, rem = divmod(rem, 60 * 60)
+    minutes, secs = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def log_checkpoint(label: str, since_ts: float, total_since_ts: float = None) -> float:
     now = time.perf_counter()
     elapsed = now - since_ts
+    total_elapsed = (now - total_since_ts) if total_since_ts is not None else None
 
     if tracemalloc.is_tracing():
         py_current, py_peak = tracemalloc.get_traced_memory()
@@ -150,12 +161,17 @@ def log_checkpoint(label: str, since_ts: float) -> float:
     gc0, gc1, gc2 = gc.get_count()
     rss_mb = _rss_mb()
 
+    total_text = (
+        f" | total_elapsed={total_elapsed:.2f}s ({_format_elapsed_human(total_elapsed)})"
+        if total_elapsed is not None
+        else ""
+    )
     _logger.info(
-        f"[PROFILE] {label} | elapsed={elapsed:.2f}s"
+        f"[PROFILE] {label} | elapsed={elapsed:.2f}s{total_text}"
     )
     rss_text = f"rss={rss_mb:.1f}MB" if rss_mb >= 0 else "rss=n/a"
     _mem_logger.info(
-        f"[PROFILE_MEM] {label} | elapsed={elapsed:.2f}s | "
+        f"[PROFILE_MEM] {label} | elapsed={elapsed:.2f}s{total_text} | "
         f"{rss_text} | py_current={py_current_mb:.1f}MB | py_peak={py_peak_mb:.1f}MB | gc=({gc0},{gc1},{gc2})"
     )
     return now
@@ -184,10 +200,10 @@ if __name__ == "__main__":
                         required=False, action='store_true', default=False)
 
     args = parser.parse_args()
-    s = time.time()
+    run_start_ts = time.perf_counter()
     if args.memory_profile and not tracemalloc.is_tracing():
         tracemalloc.start(25)
-    checkpoint_ts = time.perf_counter()
+    checkpoint_ts = run_start_ts
     checkpoint_ts = log_checkpoint("startup", checkpoint_ts)
 
     for k, v in [x.split("=") for x in (args.config or [])]:
@@ -457,7 +473,7 @@ if __name__ == "__main__":
                            repo.raw_db_utilities_5)
     checkpoint_ts = log_checkpoint("sequences_migrated", checkpoint_ts)
 
-    took = time.time() - s
+    took = time.perf_counter() - run_start_ts
     _logger.info(f"Took [{round(took, 2)}] seconds to import all data")
     _logger.info(
         f"Made [{dspace_be.get_cnt}] GET requests, [{dspace_be.post_cnt}] POST requests.")
@@ -474,4 +490,5 @@ if __name__ == "__main__":
 
     _logger.info("Database test")
     repo.test()
-    checkpoint_ts = log_checkpoint("import_finished", checkpoint_ts)
+    checkpoint_ts = log_checkpoint(
+        "import_finished", checkpoint_ts, total_since_ts=run_start_ts)

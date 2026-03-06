@@ -181,6 +181,7 @@ class bitstreams:
         repeated_error_warning_issued = False
         checkpoint_every = 2000
         checkpoint_counter = 0
+        checkpoints_saved = 0
         diagnostic_invalid_response_logs = 0
 
         path_assetstore = env["assetstore"]
@@ -204,8 +205,11 @@ class bitstreams:
             """Centralized progress-bar postfix update."""
             pbar_ref.set_postfix(
                 imported=self._imported['bitstream'],
-                skipped=skipped_deleted + skipped_already_imported,
+                skipped_deleted=skipped_deleted,
+                resumed=skipped_already_imported,
                 errored=errored,
+                checkpoints=checkpoints_saved,
+                to_checkpoint=checkpoint_every - checkpoint_counter,
             )
 
         def _record_error(b_id_val):
@@ -347,10 +351,9 @@ class bitstreams:
                 checkpoint_counter += 1
                 if checkpoint_counter >= checkpoint_every:
                     checkpoint_counter = 0
+                    checkpoints_saved += 1
                     self.serialize(cache_file)
-                    _logger.info(
-                        f'Bitstream progress checkpoint saved: imported=[{self._imported["bitstream"]}] '
-                        f'skipped_deleted=[{skipped_deleted}] resumed=[{skipped_already_imported}]')
+                    _update_progress(pbar)
                 if b['deleted']:
                     _logger.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
             except Exception as e:
