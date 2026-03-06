@@ -53,6 +53,10 @@ class _ConsoleColorFormatter(logging.Formatter):
         msg = super().format(record)
         if not self._use_color:
             return msg
+        if re.search(r"Test \[.+\]:\s+OK\b", msg):
+            return f"{_ANSI_GREEN}{msg}{_ANSI_RESET}"
+        if "Test [" in msg and not re.search(r"Test \[.+\]:\s+OK\b", msg):
+            return f"{_ANSI_RED}{msg}{_ANSI_RESET}"
         if re.search(r"\bCRIT\b\s+(expected:\[|v5:\[)", msg):
             return f"{_ANSI_RED}{msg}{_ANSI_RESET}"
         if re.search(r"\bWARN\b\s+(expected:\[|v5:\[)", msg):

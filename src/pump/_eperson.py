@@ -232,6 +232,19 @@ class groups:
         }],
     ]
 
+    test_table = [
+        {
+            "name": "epersongroup2eperson_notnull_group",
+            "left": ["sql", "db7", "one", "select count(*) from epersongroup2eperson where eperson_group_id is null"],
+            "right": ["val", 0],
+        },
+        {
+            "name": "epersongroup2eperson_notnull_eperson",
+            "left": ["sql", "db7", "one", "select count(*) from epersongroup2eperson where eperson_id is null"],
+            "right": ["val", 0],
+        },
+    ]
+
     def __init__(self, egroups_file_str: str):
         self._groups = read_json(egroups_file_str) or []
         self._imported = {

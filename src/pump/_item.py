@@ -67,6 +67,21 @@ class items:
             "left": ["sql", "db7", "one", "SELECT count(*) FROM metadatavalue where metadata_field_id in "
                                           "(select metadata_field_id from metadatafieldregistry where element = 'hasMetadata')"],
             "right": ["val", 0]
+        },
+        {
+            "name": "item_notnull_in_archive",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item WHERE in_archive IS NULL"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item_notnull_withdrawn",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item WHERE withdrawn IS NULL"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item2bundle_notnull_bundle_id",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item2bundle WHERE bundle_id IS NULL"],
+            "right": ["val", 0]
         }
     ]
 

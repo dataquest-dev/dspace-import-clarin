@@ -433,6 +433,10 @@ class tester:
         self.raw_db_utilities_5 = raw_db_utilities_5
         self.raw_db_7 = raw_db_7
         self._repo = repo
+        self._test_name_width = 42
+
+    def _test_label(self, test_name: str) -> str:
+        return f"{str(test_name or 'Test'):>{self._test_name_width}}"
 
     @staticmethod
     def get_list_val(part: list, pos: int):
@@ -518,7 +522,7 @@ class tester:
 
         # Error msg is already logged
         if vals_l is None or vals_r is None:
-            _logger.error(f"Test [{test_n}]: FAILED")
+            _logger.error(f"Test [{self._test_label(test_n)}]: FAILED")
             return
 
         compare = test.get("compare", "=")
@@ -532,12 +536,13 @@ class tester:
         if compare in comparison_operations:
             ok = comparison_operations[compare]
         else:
-            _logger.error(f"Test [{test_n}]: Invalid comparison operator!")
+            _logger.error(
+                f"Test [{self._test_label(test_n)}]: Invalid comparison operator!")
 
         if ok:
-            _logger.info(f"Test [{test_n}]: OK")
+            _logger.info(f"Test [{self._test_label(test_n)}]: OK")
         else:
-            _logger.error(f"Test [{test_n}]: FAILED")
+            _logger.error(f"Test [{self._test_label(test_n)}]: FAILED")
 
 
 class differ:
