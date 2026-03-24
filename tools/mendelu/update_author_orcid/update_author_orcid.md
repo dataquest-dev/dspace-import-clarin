@@ -4,6 +4,13 @@ Sets the `dc.contributor.author` **authority** field to the corresponding
 ORCID identifier for every author that appears in the item's
 `dc.identifier.orcid` metadata.
 
+### Expected format of `dc.identifier.orcid` values
+
+Each value must follow the layout `Surname, Given Name 0000-0002-1234-567X`
+— the author name is everything before the `XXXX-XXXX-XXXX-XXXX` pattern.
+Entries without a recognisable ORCID are skipped; authors whose name has no
+matching ORCID entry are left unchanged.
+
 ## Usage
 
 ```bash
@@ -27,11 +34,13 @@ DSPACE_PASSWORD=secret
 | `--user USER` | Admin username (default: `DSPACE_USER` from `.env`) |
 | `--password PASS` | Admin password (default: `DSPACE_PASSWORD` from `.env`) |
 | `--dry-run` | Log what would change without writing anything to DSpace |
+| `--no-orcid-check` | Skip the HTTP resolution check for each ORCID (faster, avoids ORCID rate limits) |
 
 ## Running tests
 
-Tests are pure unit tests and require no DSpace server:
+Tests are pure unit tests and require no DSpace server. They use `pytest`, which is not part of the default runtime requirements:
 
 ```bash
+pip install pytest
 pytest tools/mendelu/tests/test_update_author_orcid.py -v
 ```

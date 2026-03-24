@@ -30,8 +30,9 @@ DSPACE_PASSWORD=secret
 
 ## Running tests
 
-Tests are pure unit tests and require no DSpace server:
+Tests are pure unit tests and require no DSpace server. To run them locally, install `pytest` (it is a development dependency and may not be included in the default requirements):
 
 ```bash
+pip install pytest
 pytest tools/mendelu/tests/test_fix_identifier_uri.py -v
 ```

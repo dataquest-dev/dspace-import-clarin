@@ -5,7 +5,7 @@ lookup table.  The default mapping is:
 
 | source value | target value |
 |---|---|
-| `J_ČLÁNEK | `article` |
+| `J_ČLÁNEK` | `article` |
 
 ## Usage
 
@@ -33,8 +33,9 @@ DSPACE_PASSWORD=secret
 
 ## Running tests
 
-Tests are pure unit tests and require no DSpace server:
+Tests are pure unit tests and require no DSpace server. They use `pytest`, which is not part of the default runtime requirements:
 
 ```bash
+pip install pytest
 pytest tools/mendelu/tests/test_update_type.py -v
 ```

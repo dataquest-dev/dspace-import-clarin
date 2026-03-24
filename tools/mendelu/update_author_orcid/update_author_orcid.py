@@ -68,11 +68,13 @@ ORCID_URL = env["dspace"]["orcid_url"]
 
 class updater:
 
-    def __init__(self, dspace_be, dry_run: bool = False):
+    def __init__(self, dspace_be, dry_run: bool = False, skip_resolve: bool = False):
         self._dspace_be = dspace_be
         self._dry_run = dry_run
+        self._skip_resolve = skip_resolve
         self._stats = {"already_ok": 0, "updated": 0, "failed": 0, "unresolvable": 0}
         self._invalid_orcids = []  # (uuid, author_name, orcid)
+        self._orcid_cache: dict = {}  # orcid -> bool, cached resolution results
 
     @property
     def stats(self) -> dict:
@@ -82,20 +84,24 @@ class updater:
     def invalid_orcids(self) -> list:
         return self._invalid_orcids
 
-    @staticmethod
-    def _orcid_resolves(orcid: str) -> bool:
+    def _orcid_resolves(self, orcid: str) -> bool:
+        if orcid in self._orcid_cache:
+            return self._orcid_cache[orcid]
         url = ORCID_URL.format(orcid)
         try:
             r = requests.head(url, allow_redirects=True, timeout=10)
             if r.status_code == 200:
-                return True
-            if r.status_code in (405, 501):
+                result = True
+            elif r.status_code in (405, 501):
                 r = requests.get(url, allow_redirects=True, timeout=10, stream=True)
-                return r.status_code == 200
-            return False
+                result = r.status_code == 200
+            else:
+                result = False
         except Exception as e:
             _logger.debug(f"HEAD [{url}] exception: {e}")
-            return False
+            result = False
+        self._orcid_cache[orcid] = result
+        return result
 
     def update_item(self, item: dict):
         uuid = item["uuid"]
@@ -121,7 +127,7 @@ class updater:
                 self._stats["already_ok"] += 1
                 continue
 
-            if not self._orcid_resolves(orcid):
+            if not self._skip_resolve and not self._orcid_resolves(orcid):
                 _logger.warning(f"Item [{uuid}]: author [{name}] ORCID [{orcid}] did not return HTTP 200 – skipping")
                 self._invalid_orcids.append((uuid, name, orcid))
                 self._stats["unresolvable"] += 1
@@ -158,30 +164,34 @@ if __name__ == "__main__":
     parser.add_argument("--user", type=str, default=env["backend"]["user"])
     parser.add_argument("--password", type=str, default=env["backend"]["password"])
     parser.add_argument("--dry-run", action="store_true", default=False)
+    parser.add_argument("--no-orcid-check", action="store_true", default=False,
+                        help="Skip HTTP resolution check for each ORCID (faster, no rate-limit risk)")
     args = parser.parse_args()
     _logger.info(f"Arguments: {args}")
 
     start = time.time()
     dspace_be = dspace.rest(args.server, args.user, args.password, True)
 
-    _logger.info("Fetching items...")
-    all_items = []
-    for page in dspace_be.iter_items():
-        all_items.extend(
-            item for item in page
-            if not item["withdrawn"] and item["inArchive"]
-            and "dc.identifier.orcid" in item.get("metadata", {})
-            and "dc.contributor.author" in item.get("metadata", {})
-        )
-
-    upd = updater(dspace_be, dry_run=args.dry_run)
-    for item in tqdm.tqdm(all_items, desc="Updating authors", unit="item"):
-        upd.update_item(item)
+    upd = updater(dspace_be, dry_run=args.dry_run, skip_resolve=args.no_orcid_check)
+    total_items = 0
+    progress_desc = "Updating authors"
+    with tqdm.tqdm(desc=progress_desc, unit="item", total=None) as progress:
+        for page in dspace_be.iter_items():
+            for item in page:
+                if (
+                    not item["withdrawn"]
+                    and item["inArchive"]
+                    and "dc.identifier.orcid" in item.get("metadata", {})
+                    and "dc.contributor.author" in item.get("metadata", {})
+                ):
+                    upd.update_item(item)
+                    total_items += 1
+                    progress.update(1)
 
     _logger.info(40 * "=")
     s = upd.stats
     _logger.info(
-        f"Total items: {len(all_items)}  "
+        f"Total items: {total_items}  "
         f"already_ok={s['already_ok']}  updated={s['updated']}  "
         f"failed={s['failed']}  "
         f"unresolvable={s['unresolvable']}"

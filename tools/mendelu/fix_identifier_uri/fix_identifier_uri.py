@@ -30,10 +30,11 @@ init_logging(_logger, env["log_file"])
 # env["dspace"]["handle_prefix"] is defined in mendelu_settings (mirrors src/settings/_dspace.py)
 HANDLE_PREFIX = env["dspace"]["handle_prefix"][0]
 _HANDLE_PATH_RE = re.compile(r"/handle/([^/?#\s]+/[^/?#\s]+)")
+_HDL_URL_RE = re.compile(r"https?://hdl\.handle\.net/([^/?#\s]+/[^/?#\s]+)")
 
 
 def parse_handle(url: str):
-    m = _HANDLE_PATH_RE.search(url)
+    m = _HANDLE_PATH_RE.search(url) or _HDL_URL_RE.search(url)
     return m.group(1) if m else None
 
 
@@ -51,11 +52,13 @@ def build_patch(index: int, value: str) -> list:
 
 class fixer:
 
-    def __init__(self, dspace_be, dry_run: bool = False):
+    def __init__(self, dspace_be, dry_run: bool = False, skip_verify: bool = False):
         self._dspace_be = dspace_be
         self._dry_run = dry_run
+        self._skip_verify = skip_verify
         self._stats = {"already_ok": 0, "updated": 0, "failed": 0, "no_handle": 0}
         self._invalid_handles = []  # (uuid, old_value, new_value)
+        self._resolve_cache: dict[str, bool] = {}
 
     @property
     def stats(self) -> dict:
@@ -65,19 +68,25 @@ class fixer:
     def invalid_handles(self) -> list:
         return self._invalid_handles
 
-    @staticmethod
-    def _url_resolves(url: str) -> bool:
+    def _url_resolves(self, url: str) -> bool:
+        if url in self._resolve_cache:
+            return self._resolve_cache[url]
         try:
             r = requests.head(url, allow_redirects=True, timeout=10)
             if r.status_code == 200:
+                self._resolve_cache[url] = True
                 return True
             # Some servers reject HEAD; fall back to GET
             if r.status_code in (405, 501):
                 r = requests.get(url, allow_redirects=True, timeout=10, stream=True)
-                return r.status_code == 200
+                result = r.status_code == 200
+                self._resolve_cache[url] = result
+                return result
+            self._resolve_cache[url] = False
             return False
         except Exception as e:
             _logger.debug(f"HEAD [{url}] exception: {e}")
+            self._resolve_cache[url] = False
             return False
 
     def fix_item(self, item: dict):
@@ -97,7 +106,7 @@ class fixer:
             new_value = build_handle_url(handle)
             _logger.info(f"Item [{uuid}]: [{value}] -> [{new_value}]")
 
-            if not self._url_resolves(new_value):
+            if not self._skip_verify and not self._url_resolves(new_value):
                 _logger.warning(f"Item [{uuid}]: [{new_value}] did not return HTTP 200 – skipping")
                 self._invalid_handles.append((uuid, value, new_value))
                 continue
@@ -124,28 +133,39 @@ if __name__ == "__main__":
     parser.add_argument("--user", type=str, default=env["backend"]["user"])
     parser.add_argument("--password", type=str, default=env["backend"]["password"])
     parser.add_argument("--dry-run", action="store_true", default=False)
+    parser.add_argument(
+        "--skip-verify",
+        action="store_true",
+        default=False,
+        help="Skip HTTP resolution check for new handle URLs (faster, for trusted environments)",
+    )
     args = parser.parse_args()
     _logger.info(f"Arguments: {args}")
 
     start = time.time()
     dspace_be = dspace.rest(args.server, args.user, args.password, True)
 
-    _logger.info("Fetching items...")
-    all_items = []
-    for page in dspace_be.iter_items():
-        all_items.extend(
-            item for item in page
-            if not item["withdrawn"] and item["inArchive"]
-            and "dc.identifier.uri" in item.get("metadata", {})
-        )
+    _logger.info("Fetching and fixing items...")
 
-    fix = fixer(dspace_be, dry_run=args.dry_run)
-    for item in tqdm.tqdm(all_items, desc="Fixing URIs", unit="item"):
+    def iter_relevant_items():
+        for page in dspace_be.iter_items():
+            for item in page:
+                if (
+                    not item["withdrawn"]
+                    and item["inArchive"]
+                    and "dc.identifier.uri" in item.get("metadata", {})
+                ):
+                    yield item
+
+    fix = fixer(dspace_be, dry_run=args.dry_run, skip_verify=args.skip_verify)
+    total_with_uri = 0
+    for item in tqdm.tqdm(iter_relevant_items(), desc="Fixing URIs", unit="item"):
+        total_with_uri += 1
         fix.fix_item(item)
 
     _logger.info(40 * "=")
     s = fix.stats
-    _logger.info(f"Total with_uri: {len(all_items)}  "
+    _logger.info(f"Total with_uri: {total_with_uri}  "
                  f"already_ok={s['already_ok']}  updated={s['updated']}  "
                  f"failed={s['failed']}  no_handle={s['no_handle']}  "
                  f"invalid_url={len(fix.invalid_handles)}")

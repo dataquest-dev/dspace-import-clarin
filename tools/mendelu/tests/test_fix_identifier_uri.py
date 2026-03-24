@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../fix_identifier_ur
 
 # Patch heavy dependencies before they are imported so the module can be
 # loaded in a plain Python environment (e.g. a CI runner without DSpace libs).
-import types  # noqa
 import unittest.mock as mock
 
 for mod_name in ("dspace", "settings", "mendelu_settings", "utils", "tqdm", "requests"):
@@ -82,10 +81,15 @@ class TestParseHandle:
         url = "https://dspace.example.org/items/some-uuid"
         assert parse_handle(url) is None
 
-    def test_already_hdl_url(self):
-        # hdl.handle.net URLs do not contain /handle/ – should return None
+    def test_already_hdl_http_url(self):
+        # http hdl.handle.net URL – handle should be extracted directly
         url = "http://hdl.handle.net/20.500.12698/1785"
-        assert parse_handle(url) is None
+        assert parse_handle(url) == "20.500.12698/1785"
+
+    def test_already_hdl_https_url(self):
+        # https hdl.handle.net URL – handle should be extracted directly
+        url = "https://hdl.handle.net/20.500.12698/1785"
+        assert parse_handle(url) == "20.500.12698/1785"
 
     def test_empty_string(self):
         assert parse_handle("") is None
