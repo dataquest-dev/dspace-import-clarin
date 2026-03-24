@@ -167,7 +167,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-orcid-check", action="store_true", default=False,
                         help="Skip HTTP resolution check for each ORCID (faster, no rate-limit risk)")
     args = parser.parse_args()
-    _logger.info(f"Arguments: {args}")
+    _log_args = {k: ("***" if k == "password" else v) for k, v in vars(args).items()}
+    _logger.info(f"Arguments: {_log_args}")
 
     start = time.time()
     dspace_be = dspace.rest(args.server, args.user, args.password, True)

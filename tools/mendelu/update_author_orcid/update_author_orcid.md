@@ -11,6 +11,11 @@ Each value must follow the layout `Surname, Given Name 0000-0002-1234-567X`
 Entries without a recognisable ORCID are skipped; authors whose name has no
 matching ORCID entry are left unchanged.
 
+## Requirements
+
+- Python 3.8+
+- Dependencies listed in `requirements.txt` at the repository root
+
 ## Usage
 
 ```bash

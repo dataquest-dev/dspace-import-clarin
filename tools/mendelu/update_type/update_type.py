@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import time
+from typing import Dict, Optional
 
 import tqdm
 
@@ -35,7 +36,7 @@ class LazyMapping:
     def __init__(self, path: str, logger: logging.Logger):
         self._path = path
         self._logger = logger
-        self._data: dict | None = None
+        self._data: Optional[Dict] = None
 
     def _load(self) -> dict:
         if self._data is not None:
@@ -170,7 +171,8 @@ if __name__ == "__main__":
     parser.add_argument("--password", type=str, default=env["backend"]["password"])
     parser.add_argument("--dry-run", action="store_true", default=False)
     args = parser.parse_args()
-    _logger.info(f"Arguments: {args}")
+    _log_args = {k: ("***" if k == "password" else v) for k, v in vars(args).items()}
+    _logger.info(f"Arguments: {_log_args}")
 
     start = time.time()
     dspace_be = dspace.rest(args.server, args.user, args.password, True)

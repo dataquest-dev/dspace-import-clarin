@@ -7,6 +7,11 @@ lookup table.  The default mapping is:
 |---|---|
 | `J_ČLÁNEK` | `article` |
 
+## Requirements
+
+- Python 3.8+
+- Dependencies listed in `requirements.txt` at the repository root
+
 ## Usage
 
 ```bash

@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import time
+from typing import Dict
 
 import requests
 import tqdm
@@ -58,7 +59,7 @@ class fixer:
         self._skip_verify = skip_verify
         self._stats = {"already_ok": 0, "updated": 0, "failed": 0, "no_handle": 0}
         self._invalid_handles = []  # (uuid, old_value, new_value)
-        self._resolve_cache: dict[str, bool] = {}
+        self._resolve_cache: Dict[str, bool] = {}
 
     @property
     def stats(self) -> dict:
@@ -140,7 +141,8 @@ if __name__ == "__main__":
         help="Skip HTTP resolution check for new handle URLs (faster, for trusted environments)",
     )
     args = parser.parse_args()
-    _logger.info(f"Arguments: {args}")
+    _log_args = {k: ("***" if k == "password" else v) for k, v in vars(args).items()}
+    _logger.info(f"Arguments: {_log_args}")
 
     start = time.time()
     dspace_be = dspace.rest(args.server, args.user, args.password, True)

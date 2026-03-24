@@ -4,6 +4,11 @@ Normalises `dc.identifier.uri` metadata values across all DSpace items so
 that every value uses the canonical handle prefix form defined in
 `mendelu_settings.py` (`dspace.handle_prefix[0]`, e.g. `http://hdl.handle.net/`).
 
+## Requirements
+
+- Python 3.8+
+- Dependencies listed in `requirements.txt` at the repository root
+
 ## Usage
 
 ```bash
