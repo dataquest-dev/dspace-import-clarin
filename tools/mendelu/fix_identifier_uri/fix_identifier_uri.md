@@ -12,7 +12,7 @@ that every value uses the canonical handle prefix form defined in
 ## Usage
 
 ```bash
-python tools/mendelu/fix_identifier_uri/fix_identifier_uri.py [--server URL] [--user USER] [--password PASS] [--dry-run]
+python tools/mendelu/fix_identifier_uri/fix_identifier_uri.py [--server URL] [--user USER] [--password PASS] [--dry-run] [--skip-verify]
 ```
 
 Credentials and server URL are read from `tools/mendelu/.env` by default (one level up from the script).
@@ -32,6 +32,7 @@ DSPACE_PASSWORD=secret
 | `--user USER` | Admin username (default: `DSPACE_USER` from `.env`) |
 | `--password PASS` | Admin password (default: `DSPACE_PASSWORD` from `.env`) |
 | `--dry-run` | Log what would change without writing anything to DSpace |
+| `--skip-verify` | Skip HTTP resolution check for new handle URLs (faster, for trusted environments) |
 
 ## Running tests
 

@@ -79,8 +79,8 @@ class fixer:
                 return True
             # Some servers reject HEAD; fall back to GET
             if r.status_code in (405, 501):
-                r = requests.get(url, allow_redirects=True, timeout=10, stream=True)
-                result = r.status_code == 200
+                with requests.get(url, allow_redirects=True, timeout=10, stream=True) as get_response:
+                    result = get_response.status_code == 200
                 self._resolve_cache[url] = result
                 return result
             self._resolve_cache[url] = False

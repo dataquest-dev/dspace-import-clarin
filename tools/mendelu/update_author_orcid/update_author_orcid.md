@@ -19,7 +19,7 @@ matching ORCID entry are left unchanged.
 ## Usage
 
 ```bash
-python tools/mendelu/update_author_orcid/update_author_orcid.py [--server URL] [--user USER] [--password PASS] [--dry-run]
+python tools/mendelu/update_author_orcid/update_author_orcid.py [--server URL] [--user USER] [--password PASS] [--dry-run] [--no-orcid-check]
 ```
 
 Credentials and server URL are read from `tools/mendelu/.env` by default.
