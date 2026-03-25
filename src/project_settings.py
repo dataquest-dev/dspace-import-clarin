@@ -84,7 +84,6 @@ settings = {
     "version_date_fields": ["dc.date.issued", "dc.date.accessioned"],
 
     "dspace": {
-        "handle_prefix": ["http://hdl.handle.net/", "https://hdl.handle.net/"],
         "orcid_url": "https://orcid.org/{}",
     },
 

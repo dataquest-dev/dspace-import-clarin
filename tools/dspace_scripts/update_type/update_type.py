@@ -23,7 +23,8 @@ import project_settings  # noqa
 
 logging.getLogger("dspace.client").setLevel(logging.WARNING)
 _logger = logging.getLogger()
-env = update_settings(settings.env, project_settings.settings)
+env = update_settings(project_settings.settings, settings.env)
+from utils import init_logging, update_settings, apply_env_backend  # noqa
 init_logging(_logger, env["log_file"])
 
 _MAPPING_FILE = env["update_type"]["mapping_file"]
@@ -165,9 +166,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Set dc.type for each item based on a default mapping (e.g. J_ČLÁNEK -> article)"
     )
-    parser.add_argument("--server", type=str, default=env["backend"]["endpoint"])
-    parser.add_argument("--user", type=str, default=env["backend"]["user"])
-    parser.add_argument("--password", type=str, default=env["backend"]["password"])
+    parser.add_argument("--server", type=str, default=os.environ.get("DSPACE_ENDPOINT"))
+    parser.add_argument("--user", type=str, default=os.environ.get("DSPACE_USER"))
+    parser.add_argument("--password", type=str, default=os.environ.get("DSPACE_PASSWORD"))
     parser.add_argument("--dry-run", action="store_true", default=False)
     args = parser.parse_args()
     _log_args = {k: ("***" if k == "password" else v) for k, v in vars(args).items()}

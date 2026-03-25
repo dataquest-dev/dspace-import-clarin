@@ -17,14 +17,14 @@ utils.load_env(os.path.join(_this_dir, os.environ.get("ENVFILE", "../.env")))
 
 import dspace  # noqa
 import settings  # noqa  (src/settings – imported before local dir is on path)
-from utils import init_logging, update_settings  # noqa
+from utils import init_logging, update_settings, apply_env_backend  # noqa
 
 import project_settings  # noqa
 
 logging.getLogger("dspace.client").setLevel(logging.WARNING)
 _logger = logging.getLogger()
-env = update_settings(settings.env, project_settings.settings)
-init_logging(_logger, env["log_file"])
+env = update_settings(project_settings.settings, settings.env)
+env = apply_env_backend(env)
 
 # ORCID format: four groups of four digits separated by hyphens
 _ORCID_RE = re.compile(r"\b(\d{4}-\d{4}-\d{4}-\d{3}[\dX])\b")
@@ -159,9 +159,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Set dc.contributor.author authority from dc.identifier.orcid values"
     )
-    parser.add_argument("--server", type=str, default=env["backend"]["endpoint"])
-    parser.add_argument("--user", type=str, default=env["backend"]["user"])
-    parser.add_argument("--password", type=str, default=env["backend"]["password"])
+    parser.add_argument("--server", type=str, default=os.environ.get("DSPACE_ENDPOINT"))
+    parser.add_argument("--user", type=str, default=os.environ.get("DSPACE_USER"))
+    parser.add_argument("--password", type=str, default=os.environ.get("DSPACE_PASSWORD"))
     parser.add_argument("--dry-run", action="store_true", default=False)
     parser.add_argument("--no-orcid-check", action="store_true", default=False,
                         help="Skip HTTP resolution check for each ORCID (faster, no rate-limit risk)")

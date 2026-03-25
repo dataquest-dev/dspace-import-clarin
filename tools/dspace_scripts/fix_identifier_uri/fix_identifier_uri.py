@@ -18,23 +18,24 @@ utils.load_env(os.path.join(_this_dir, os.environ.get("ENVFILE", "../.env")))
 
 import dspace  # noqa
 import settings  # noqa  (src/settings – imported before local dir is on path)
-from utils import init_logging, update_settings  # noqa
+from utils import init_logging, update_settings, apply_env_backend  # noqa
 
 import project_settings  # noqa
 
 logging.getLogger("dspace.client").setLevel(logging.WARNING)
 _logger = logging.getLogger()
-env = update_settings(settings.env, project_settings.settings)
+env = update_settings(project_settings.settings, settings.env)
+env = apply_env_backend(env)
 init_logging(_logger, env["log_file"])
 
 # env["dspace"]["handle_prefix"] is defined in project_settings
-HANDLE_PREFIX = env["dspace"]["handle_prefix"][0]
+HANDLE_PREFIX = env["dspace"]["handle_prefix"]
 _HANDLE_PATH_RE = re.compile(r"/handle/([^/?#\s]+/[^/?#\s]+)")
-_HDL_URL_RE = re.compile(r"https?://hdl\.handle\.net/([^/?#\s]+/[^/?#\s]+)")
+_HANDLE_GENERIC_RE = re.compile(r"([0-9]+/[0-9]+)")
 
 
 def parse_handle(url: str):
-    m = _HANDLE_PATH_RE.search(url) or _HDL_URL_RE.search(url)
+    m = _HANDLE_PATH_RE.search(url) or _HANDLE_GENERIC_RE.search(url)
     return m.group(1) if m else None
 
 
@@ -43,7 +44,11 @@ def build_handle_url(handle: str) -> str:
 
 
 def needs_update(value: str) -> bool:
-    return not value.startswith(HANDLE_PREFIX)
+    handle = parse_handle(value)
+    if not handle:
+        return False
+    expected = build_handle_url(handle)
+    return value != expected
 
 
 def build_patch(index: int, value: str) -> list:
@@ -129,9 +134,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=f"Normalize dc.identifier.uri values to {HANDLE_PREFIX} format"
     )
-    parser.add_argument("--server", type=str, default=env["backend"]["endpoint"])
-    parser.add_argument("--user", type=str, default=env["backend"]["user"])
-    parser.add_argument("--password", type=str, default=env["backend"]["password"])
+    parser.add_argument("--server", type=str, default=os.environ.get("DSPACE_ENDPOINT"))
+    parser.add_argument("--user", type=str, default=os.environ.get("DSPACE_USER"))
+    parser.add_argument("--password", type=str, default=os.environ.get("DSPACE_PASSWORD"))
     parser.add_argument("--dry-run", action="store_true", default=False)
     parser.add_argument(
         "--skip-verify",
