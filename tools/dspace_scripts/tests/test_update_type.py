@@ -8,11 +8,11 @@ import unittest.mock as mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../update_type"))
 
-for mod_name in ("dspace", "settings", "mendelu_settings", "utils", "tqdm"):
+for mod_name in ("dspace", "settings", "project_settings", "utils", "tqdm"):
     if mod_name not in sys.modules:
         sys.modules[mod_name] = mock.MagicMock()
 
-sys.modules["mendelu_settings"].settings = {
+sys.modules["project_settings"].settings = {
     "log_file": os.path.join(os.path.dirname(__file__), "__test.log"),
     "backend": {"endpoint": "http://localhost/api", "user": "test", "password": "test"},
 }

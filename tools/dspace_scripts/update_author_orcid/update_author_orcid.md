@@ -19,15 +19,15 @@ matching ORCID entry are left unchanged.
 ## Usage
 
 ```bash
-python tools/mendelu/update_author_orcid/update_author_orcid.py [--server URL] [--user USER] [--password PASS] [--dry-run] [--no-orcid-check]
+python tools/dspace_scripts/update_author_orcid/update_author_orcid.py [--server URL] [--user USER] [--password PASS] [--dry-run] [--no-orcid-check]
 ```
 
-Credentials and server URL are read from `tools/mendelu/.env` by default.
+Credentials and server URL are read from `tools/dspace_scripts/.env` by default.
 Edit `.env` directly when command-line arguments are not suitable:
 
 ```
-DSPACE_ENDPOINT=https://dspace.mendelu.cz/server/api
-DSPACE_USER=admin@mendelu.cz
+DSPACE_ENDPOINT=https://dspace.example.org/server/api
+DSPACE_USER=admin@example.org
 DSPACE_PASSWORD=secret
 ```
 
@@ -47,5 +47,5 @@ Tests are pure unit tests and require no DSpace server. They use `pytest`, which
 
 ```bash
 pip install pytest
-pytest tools/mendelu/tests/test_update_author_orcid.py -v
+pytest tools/dspace_scripts/tests/test_update_author_orcid.py -v
 ```

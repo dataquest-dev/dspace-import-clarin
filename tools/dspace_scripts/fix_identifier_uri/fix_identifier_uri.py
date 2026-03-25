@@ -20,15 +20,14 @@ import dspace  # noqa
 import settings  # noqa  (src/settings – imported before local dir is on path)
 from utils import init_logging, update_settings  # noqa
 
-sys.path.insert(0, os.path.join(_this_dir, ".."))
-import mendelu_settings  # noqa
+import project_settings  # noqa
 
 logging.getLogger("dspace.client").setLevel(logging.WARNING)
 _logger = logging.getLogger()
-env = update_settings(settings.env, mendelu_settings.settings)
+env = update_settings(settings.env, project_settings.settings)
 init_logging(_logger, env["log_file"])
 
-# env["dspace"]["handle_prefix"] is defined in mendelu_settings (mirrors src/settings/_dspace.py)
+# env["dspace"]["handle_prefix"] is defined in project_settings
 HANDLE_PREFIX = env["dspace"]["handle_prefix"][0]
 _HANDLE_PATH_RE = re.compile(r"/handle/([^/?#\s]+/[^/?#\s]+)")
 _HDL_URL_RE = re.compile(r"https?://hdl\.handle\.net/([^/?#\s]+/[^/?#\s]+)")

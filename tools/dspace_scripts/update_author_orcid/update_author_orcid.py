@@ -19,12 +19,11 @@ import dspace  # noqa
 import settings  # noqa  (src/settings – imported before local dir is on path)
 from utils import init_logging, update_settings  # noqa
 
-sys.path.insert(0, os.path.join(_this_dir, ".."))
-import mendelu_settings  # noqa
+import project_settings  # noqa
 
 logging.getLogger("dspace.client").setLevel(logging.WARNING)
 _logger = logging.getLogger()
-env = update_settings(settings.env, mendelu_settings.settings)
+env = update_settings(settings.env, project_settings.settings)
 init_logging(_logger, env["log_file"])
 
 # ORCID format: four groups of four digits separated by hyphens

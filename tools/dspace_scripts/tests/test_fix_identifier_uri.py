@@ -14,11 +14,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../fix_identifier_ur
 # loaded in a plain Python environment (e.g. a CI runner without DSpace libs).
 import unittest.mock as mock
 
-for mod_name in ("dspace", "settings", "mendelu_settings", "utils", "tqdm", "requests"):
+for mod_name in ("dspace", "settings", "project_settings", "utils", "tqdm", "requests"):
     if mod_name not in sys.modules:
         sys.modules[mod_name] = mock.MagicMock()
 
-sys.modules["mendelu_settings"].settings = {
+sys.modules["project_settings"].settings = {
     "log_file": os.path.join(os.path.dirname(__file__), "__test.log"),
     "backend": {
         "endpoint": "http://localhost/api",
@@ -34,7 +34,7 @@ sys.modules["utils"].update_settings = lambda a, b: {
 }
 sys.modules["utils"].init_logging = lambda *a, **kw: None
 
-from tools.mendelu.fix_identifier_uri.fix_identifier_uri import (  # noqa: E402
+from tools.dspace_scripts.fix_identifier_uri.fix_identifier_uri import (  # noqa: E402
     parse_handle,
     build_handle_url,
     needs_update,
@@ -162,7 +162,7 @@ class TestBuildPatch:
 class TestRoundTrip:
 
     def test_typical_repository_url(self):
-        original = "https://dspace.mendelu.cz/handle/20.500.12698/1785"
+        original = "https://dspace.example.org/handle/20.500.12698/1785"
         handle = parse_handle(original)
         assert handle == "20.500.12698/1785"
         canonical = build_handle_url(handle)
@@ -190,7 +190,7 @@ class TestFixerUrlVerification:
         return be
 
     def test_valid_url_updates(self):
-        item = self._make_item("https://dspace.mendelu.cz/handle/20.500.12698/1")
+        item = self._make_item("https://dspace.example.org/handle/20.500.12698/1")
         be = self._make_dspace_be()
         f = fixer(be)
         with mock.patch.object(fixer, "_url_resolves", return_value=True):
@@ -199,7 +199,7 @@ class TestFixerUrlVerification:
         assert f.invalid_handles == []
 
     def test_unresolvable_url_skipped(self):
-        item = self._make_item("https://dspace.mendelu.cz/handle/20.500.12698/999")
+        item = self._make_item("https://dspace.example.org/handle/20.500.12698/999")
         be = self._make_dspace_be()
         f = fixer(be)
         with mock.patch.object(fixer, "_url_resolves", return_value=False):

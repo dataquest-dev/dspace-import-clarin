@@ -15,15 +15,15 @@ lookup table.  The default mapping is:
 ## Usage
 
 ```bash
-python tools/mendelu/update_type/update_type.py [--server URL] [--user USER] [--password PASS] [--dry-run]
+python tools/dspace_scripts/update_type/update_type.py [--server URL] [--user USER] [--password PASS] [--dry-run]
 ```
 
-Credentials and server URL are read from `tools/mendelu/.env` by default (one level up from the script).
+Credentials and server URL are read from `tools/dspace_scripts/.env` by default (one level up from the script).
 If command-line arguments cannot be used (e.g. in automated pipelines), edit `.env` directly:
 
 ```
-DSPACE_ENDPOINT=https://dspace.mendelu.cz/server/api
-DSPACE_USER=admin@mendelu.cz
+DSPACE_ENDPOINT=https://dspace.example.org/server/api
+DSPACE_USER=admin@example.org
 DSPACE_PASSWORD=secret
 ```
 
@@ -42,5 +42,5 @@ Tests are pure unit tests and require no DSpace server. They use `pytest`, which
 
 ```bash
 pip install pytest
-pytest tools/mendelu/tests/test_update_type.py -v
+pytest tools/dspace_scripts/tests/test_update_type.py -v
 ```

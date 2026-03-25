@@ -81,5 +81,14 @@ settings = {
         "replace_with_def_url": "http://dev-5.pc:85/XXX/static/",
     },
 
-    "version_date_fields": ["dc.date.issued", "dc.date.accessioned"]
+    "version_date_fields": ["dc.date.issued", "dc.date.accessioned"],
+
+    "dspace": {
+        "handle_prefix": ["http://hdl.handle.net/", "https://hdl.handle.net/"],
+        "orcid_url": "https://orcid.org/{}",
+    },
+
+    "update_type": {
+        "mapping_file": os.path.join(_this_dir, "../tools/dspace_scripts/update_type/mapping.json"),
+    },
 }
