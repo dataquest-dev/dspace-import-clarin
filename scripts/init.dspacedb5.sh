@@ -86,50 +86,81 @@ ensure_pv_available() {
 	fi
 }
 
+# Runs psql with a 15s heartbeat that is always cleaned up via `trap ... EXIT`
+# in a subshell, so the background loop cannot survive early exits or signals
+# (SIGINT/SIGTERM, `set -e` abort). Intentionally does NOT pass
+# `-v ON_ERROR_STOP=1` — see comment in import_dump_with_progress for why.
+# Propagates psql's exit code (no `|| true`) so fatal conditions
+# (connection/auth/OOM/missing file) abort the script as they should.
+_run_psql_with_heartbeat() {
+	local db_name="$1"
+	local dump_path="$2"
+	local log_file="$3"
+	(
+		local start_epoch heartbeat_pid
+		start_epoch=$(date +%s)
+		(
+			while true; do
+				sleep 15
+				echo "[$(date +"%Y-%m-%d %H:%M:%S")] importing ${db_name}... $(( $(date +%s) - start_epoch ))s elapsed"
+			done
+		) &
+		heartbeat_pid=$!
+		# shellcheck disable=SC2064  # heartbeat_pid is intentionally expanded at trap definition time
+		trap "kill \"$heartbeat_pid\" >/dev/null 2>&1 || true; wait \"$heartbeat_pid\" 2>/dev/null || true" EXIT
+		psql -U postgres "$db_name" < "$dump_path" > "$log_file" 2>&1
+	)
+}
+
 import_dump_with_progress() {
 	local db_name="$1"
 	local dump_file="$2"
 	local log_file="$3"
 	local dump_path="../dump/$dump_file"
-	local started_at
-	local finished_at
-	local elapsed
+	local started_at finished_at elapsed
 
 	if [ ! -f "$dump_path" ]; then
 		echo "Missing dump file: $dump_path"
 		exit 1
 	fi
 
-	echo "[$(ts)] Importing $db_name from $dump_file"
+	# NOTE: CLARIN-DSpace 5 plain-SQL dumps are not guaranteed to be in topological
+	# dependency order, so psql is intentionally invoked WITHOUT `-v ON_ERROR_STOP=1`.
+	# Without ON_ERROR_STOP, psql keeps going on per-statement SQL errors (duplicate
+	# keys, missing refs caused by ordering) and returns 0 — which is what we want.
+	# It still exits non-zero on fatal conditions (connection/auth/OOM/missing input
+	# file); we deliberately do NOT mask those with `|| true`. The import runs twice:
+	# pass 1 creates as many objects as possible with per-statement errors tolerated,
+	# pass 2 fills in the rest and produces a persistent log.
+	# Do NOT wrap the dump import in run_with_retry — retrying after a partial insert
+	# only cascades duplicate-key errors and, combined with ON_ERROR_STOP, killed the
+	# ephemeral --rm postgres container in the past (root cause of this file's redesign).
+
+	assert_server_process_alive
+	wait_for_ready 30
+
+	echo "[$(ts)] Importing $db_name from $dump_file (pass 1/2 - establish schema, per-statement errors tolerated)"
 	started_at=$(date +%s)
+	_run_psql_with_heartbeat "$db_name" "$dump_path" "/dev/null"
+	finished_at=$(date +%s)
+	elapsed=$((finished_at - started_at))
+	echo "[$(ts)] Pass 1/2 done for $db_name in ${elapsed}s"
 
+	assert_server_process_alive
+
+	echo "[$(ts)] Importing $db_name from $dump_file (pass 2/2 - populate data, logged)"
+	started_at=$(date +%s)
 	if command -v pv >/dev/null 2>&1; then
-		run_with_retry "psql import $db_name (pv)" bash -lc "pv \"$dump_path\" | psql -v ON_ERROR_STOP=1 -U postgres \"$db_name\" > \"$log_file\" 2>&1"
+		# pv provides its own progress indicator, so no heartbeat needed here.
+		pv "$dump_path" | psql -U postgres "$db_name" > "$log_file" 2>&1
 	else
-		run_with_retry "psql import $db_name" bash -lc '
-			set -euo pipefail
-			dump_path="$1"
-			db_name="$2"
-			log_file="$3"
-			start_epoch=$(date +%s)
-			(
-				while true; do
-					sleep 15
-					now_epoch=$(date +%s)
-					echo "[$(date +"%Y-%m-%d %H:%M:%S")] importing $db_name... $((now_epoch - start_epoch))s elapsed"
-				done
-			) &
-			heartbeat_pid=$!
-			trap "kill $heartbeat_pid >/dev/null 2>&1 || true" EXIT
-			psql -v ON_ERROR_STOP=1 -U postgres "$db_name" < "$dump_path" > "$log_file" 2>&1
-			kill $heartbeat_pid >/dev/null 2>&1 || true
-			wait $heartbeat_pid 2>/dev/null || true
-		' _ "$dump_path" "$db_name" "$log_file"
+		_run_psql_with_heartbeat "$db_name" "$dump_path" "$log_file"
 	fi
-
 	finished_at=$(date +%s)
 	elapsed=$((finished_at - started_at))
 	echo "[$(ts)] Finished import for $db_name in ${elapsed}s (log: $log_file)"
+
+	assert_server_process_alive
 }
 
 wait_for_ready 180
