@@ -100,36 +100,53 @@ import_dump_with_progress() {
 		exit 1
 	fi
 
-	echo "[$(ts)] Importing $db_name from $dump_file"
+	# NOTE: CLARIN-DSpace 5 plain-SQL dumps are not guaranteed to be in topological
+	# dependency order. The legacy script ran psql twice (first pass tolerating
+	# errors to create objects, second pass populating remaining data) and did NOT
+	# use ON_ERROR_STOP. That behavior is intentional — the import must tolerate
+	# dependency-order errors, otherwise psql aborts, the ephemeral --rm postgres
+	# container exits and subsequent steps fail with "Connection refused" on 15432.
+	# Do NOT add `-v ON_ERROR_STOP=1` here and do NOT wrap the dump import in
+	# run_with_retry (retrying after a partial insert only generates duplicate-key
+	# errors on subsequent attempts).
+
+	assert_server_process_alive
+	wait_for_ready 30
+
+	echo "[$(ts)] Importing $db_name from $dump_file (pass 1/2 - establish schema, errors tolerated)"
+	started_at=$(date +%s)
+	psql -U postgres "$db_name" < "$dump_path" > /dev/null 2>&1 || true
+	finished_at=$(date +%s)
+	elapsed=$((finished_at - started_at))
+	echo "[$(ts)] Pass 1/2 done for $db_name in ${elapsed}s"
+
+	assert_server_process_alive
+
+	echo "[$(ts)] Importing $db_name from $dump_file (pass 2/2 - populate data, logged)"
 	started_at=$(date +%s)
 
 	if command -v pv >/dev/null 2>&1; then
-		run_with_retry "psql import $db_name (pv)" bash -lc "pv \"$dump_path\" | psql -v ON_ERROR_STOP=1 -U postgres \"$db_name\" > \"$log_file\" 2>&1"
+		pv "$dump_path" | psql -U postgres "$db_name" > "$log_file" 2>&1 || true
 	else
-		run_with_retry "psql import $db_name" bash -lc '
-			set -euo pipefail
-			dump_path="$1"
-			db_name="$2"
-			log_file="$3"
-			start_epoch=$(date +%s)
-			(
-				while true; do
-					sleep 15
-					now_epoch=$(date +%s)
-					echo "[$(date +"%Y-%m-%d %H:%M:%S")] importing $db_name... $((now_epoch - start_epoch))s elapsed"
-				done
-			) &
-			heartbeat_pid=$!
-			trap "kill $heartbeat_pid >/dev/null 2>&1 || true" EXIT
-			psql -v ON_ERROR_STOP=1 -U postgres "$db_name" < "$dump_path" > "$log_file" 2>&1
-			kill $heartbeat_pid >/dev/null 2>&1 || true
-			wait $heartbeat_pid 2>/dev/null || true
-		' _ "$dump_path" "$db_name" "$log_file"
+		start_epoch=$(date +%s)
+		(
+			while true; do
+				sleep 15
+				now_epoch=$(date +%s)
+				echo "[$(date +"%Y-%m-%d %H:%M:%S")] importing $db_name... $((now_epoch - start_epoch))s elapsed"
+			done
+		) &
+		heartbeat_pid=$!
+		psql -U postgres "$db_name" < "$dump_path" > "$log_file" 2>&1 || true
+		kill $heartbeat_pid >/dev/null 2>&1 || true
+		wait $heartbeat_pid 2>/dev/null || true
 	fi
 
 	finished_at=$(date +%s)
 	elapsed=$((finished_at - started_at))
 	echo "[$(ts)] Finished import for $db_name in ${elapsed}s (log: $log_file)"
+
+	assert_server_process_alive
 }
 
 wait_for_ready 180
