@@ -93,6 +93,21 @@ class rest:
 
         self.client = client.DSpaceClient(
             api_endpoint=endpoint, username=user, password=password)
+        # Install a default per-request timeout on the underlying
+        # requests.Session. The pinned submodule libs/dspace-rest-python
+        # (api_post(url, params, json, retry=False) etc.) has no `timeout`
+        # kwarg and no **kwargs passthrough, so we cannot pass timeouts from
+        # the caller side without a TypeError. Wrapping `session.request`
+        # gives us the hardening behavior (no infinite hangs) uniformly for
+        # GET/POST/PUT/DELETE without modifying the submodule.
+        _default_timeout = (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
+        _orig_request = self.client.session.request
+
+        def _request_with_default_timeout(method, url, **kwargs):
+            kwargs.setdefault("timeout", _default_timeout)
+            return _orig_request(method, url, **kwargs)
+
+        self.client.session.request = _request_with_default_timeout
         if auth:
             if not self.client.authenticate():
                 _logger.error(
@@ -750,12 +765,10 @@ class rest:
     def post(self, command: str, params=None, data=None):
         url = self.endpoint + '/' + command
         self._post_cnt += 1
-        return self.client.api_post(
-            url,
-            params or {},
-            data or {},
-            timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
-        )
+        # NOTE: pinned submodule's api_post(url, params, json, retry=False)
+        # does not accept `timeout`. The default timeout is installed at
+        # session level in __init__ (see _request_with_default_timeout).
+        return self.client.api_post(url, params or {}, data or {})
 
     def _is_circuit_breaker_open(self):
         """Check if circuit breaker is open due to too many consecutive failures"""
