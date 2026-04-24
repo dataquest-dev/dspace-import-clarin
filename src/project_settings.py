@@ -17,7 +17,7 @@ settings = {
         "reauth_minutes": 20,
         "import_workers": 6,
         "ignore_deleted_bitstreams": True,
-        "testing": True,
+        "testing": False,
     },
 
     "ignore": {
