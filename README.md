@@ -193,6 +193,3 @@ When the `--test` option is specified with table names:
 2. This simulates empty tables during the import process
 3. The migration logic is tested without requiring actual data
 4. The test JSON filename can be customized in `project_settings.py` under `"input"["test_json_filename"]`
-
-#### NOTE
-Deleted bitstreams are not imported in this configuration; this can be modified via the backend.testing property in project_settings.py.
