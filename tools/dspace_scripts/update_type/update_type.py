@@ -89,9 +89,12 @@ class LazyMapping:
 DEFAULT_MAPPING = LazyMapping(_MAPPING_FILE, _logger)
 
 
+_FALLBACK_TYPE = "other"
+
+
 def map_type(value: str, mapping: dict):
-    """Return the mapped value for *value*, or None if not in *mapping*."""
-    return mapping.get(value)
+    """Return the mapped value for *value*, or the fallback type if not in *mapping*."""
+    return mapping.get(value, _FALLBACK_TYPE)
 
 
 def build_patch(index: int, value: str) -> list:
@@ -99,7 +102,7 @@ def build_patch(index: int, value: str) -> list:
 
 
 def should_update(current: str, mapped) -> bool:
-    """Return True if *mapped* is not None and differs from *current*."""
+    """Return True if *mapped* differs from *current*."""
     return mapped is not None and current != mapped
 
 
@@ -110,7 +113,8 @@ class updater:
         self._mapping = mapping if mapping is not None else DEFAULT_MAPPING
         self._mapping_values = set(self._mapping.values())
         self._dry_run = dry_run
-        self._stats = {"already_ok": 0, "updated": 0, "failed": 0, "not_mapped": 0, "no_type": 0}
+        self._stats = {"already_ok": 0, "updated": 0, "failed": 0, "not_mapped": 0, "no_type": 0, "fallback": 0}
+        self._fallback_items: list[dict] = []
 
     @property
     def stats(self) -> dict:
@@ -129,24 +133,31 @@ class updater:
             current = entry.get("value", "")
             mapped = map_type(current, self._mapping)
 
+            is_fallback = mapped == _FALLBACK_TYPE and current not in self._mapping
+
             if not should_update(current, mapped):
-                if mapped is None and current in self._mapping_values:
+                if current in self._mapping_values:
                     # Value is already the mapped target (e.g. "Article")
                     self._stats["already_ok"] += 1
                     _logger.debug(f"Item [{uuid}]: dc.type[{idx}]=[{current}] already correct")
-                elif mapped is None:
-                    self._stats["not_mapped"] += 1
-                    _logger.debug(f"Item [{uuid}]: dc.type[{idx}]=[{current}] not in mapping – skipped")
                 else:
                     # mapped == current (source key happens to equal its own target)
                     self._stats["already_ok"] += 1
                     _logger.debug(f"Item [{uuid}]: dc.type[{idx}]=[{current}] already correct")
                 continue
 
-            _logger.info(
-                f"Item [{uuid}]: dc.type[{idx}] [{current}] -> [{mapped}]"
-                + (" [DRY RUN]" if self._dry_run else "")
-            )
+            if is_fallback:
+                self._stats["fallback"] += 1
+                self._fallback_items.append({"uuid": uuid, "original_type": current})
+                _logger.warning(
+                    f"Item [{uuid}]: dc.type[{idx}]=[{current}] not in mapping – fallback to [{_FALLBACK_TYPE}]"
+                    + (" [DRY RUN]" if self._dry_run else "")
+                )
+            else:
+                _logger.info(
+                    f"Item [{uuid}]: dc.type[{idx}] [{current}] -> [{mapped}]"
+                    + (" [DRY RUN]" if self._dry_run else "")
+                )
 
             if not self._dry_run:
                 patch = build_patch(idx, mapped)
@@ -196,7 +207,13 @@ if __name__ == "__main__":
     _logger.info(
         f"Total items: {total_items}  "
         f"already_ok={s['already_ok']}  updated={s['updated']}  "
-        f"failed={s['failed']}  not_mapped={s['not_mapped']}  no_type={s['no_type']}"
+        f"failed={s['failed']}  not_mapped={s['not_mapped']}  "
+        f"no_type={s['no_type']}  fallback={s['fallback']}"
     )
+
+    if upd._fallback_items:
+        _logger.info(f"Items that used fallback type [{_FALLBACK_TYPE}] ({len(upd._fallback_items)}):")
+        for fb in upd._fallback_items:
+            _logger.info(f"  UUID={fb['uuid']}  original_type=[{fb['original_type']}]")
     took = time.time() - start
     _logger.info(f"Total time: {took:.2f} s [{time.strftime('%H:%M:%S', time.gmtime(took))}]")

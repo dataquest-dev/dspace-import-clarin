@@ -2,7 +2,7 @@
 
 Normalises `dc.identifier.uri` metadata values across all DSpace items so
 that every value uses the canonical handle prefix form defined in
-`local_settings.py` (`dspace.handle_prefix[0]`, e.g. `http://hdl.handle.net/`).
+`src/settings/_dspace.py` (`dspace.handle_prefix[0]`, e.g. `http://hdl.handle.net/`).
 
 ## Requirements
 

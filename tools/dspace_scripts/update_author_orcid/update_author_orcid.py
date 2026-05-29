@@ -25,6 +25,7 @@ logging.getLogger("dspace.client").setLevel(logging.WARNING)
 _logger = logging.getLogger()
 env = update_settings(project_settings.settings, settings.env)
 env = apply_env_backend(env)
+init_logging(_logger, env["log_file"])
 
 # ORCID format: four groups of four digits separated by hyphens
 _ORCID_RE = re.compile(r"\b(\d{4}-\d{4}-\d{4}-\d{3}[\dX])\b")
