@@ -37,6 +37,34 @@ class bitstreams:
                                    "(select metadata_field_id from metadatafieldregistry "
                                    "where qualifier = 'redirectToURL')"],
             "right": ["val", 0]
+        },
+        {
+            "name": "bitstream_duplicate_original_bundle_sequence",
+            "left": ["sql", "db7", "one", "select count(*) from ("
+                                   " select b2b.bundle_id, b.sequence_id"
+                                   " from bundle2bitstream b2b"
+                                   " join bitstream b on b.bitstream_id = b2b.bitstream_id"
+                                   " join bundle bu on bu.bundle_id = b2b.bundle_id"
+                                   " where bu.name = 'ORIGINAL'"
+                                   " group by b2b.bundle_id, b.sequence_id"
+                                   " having count(*) > 1"
+                                   ") dup"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "bitstream_duplicate_original_bundle_name_checksum",
+            "left": ["sql", "db7", "one", "select count(*) from ("
+                                   " select b2b.bundle_id, lower(mv.text_value), b.checksum"
+                                   " from bundle2bitstream b2b"
+                                   " join bitstream b on b.bitstream_id = b2b.bitstream_id"
+                                   " join bundle bu on bu.bundle_id = b2b.bundle_id"
+                                   " join metadatavalue mv on mv.resource_type_id = 0 and mv.dspace_object_id = b.bitstream_id"
+                                   " join metadatafieldregistry mfr on mfr.metadata_field_id = mv.metadata_field_id"
+                                   " where bu.name = 'ORIGINAL' and mfr.element = 'title'"
+                                   " group by b2b.bundle_id, lower(mv.text_value), b.checksum"
+                                   " having count(*) > 1"
+                                   ") dup"],
+            "right": ["val", 0]
         }
     ]
 
@@ -72,6 +100,85 @@ class bitstreams:
     @staticmethod
     def bitstream_path(internal_id: str):
         return os.path.join(internal_id[:2], internal_id[2:4], internal_id[4:6], internal_id)
+
+    @staticmethod
+    def _normalize_signature_value(value):
+        if value is None:
+            return None
+        return str(value).strip()
+
+    @staticmethod
+    def _extract_metadata_title(metadata):
+        if not isinstance(metadata, dict):
+            return None
+        values = metadata.get('dc.title')
+        if not isinstance(values, list) or len(values) == 0:
+            return None
+        first = values[0]
+        if not isinstance(first, dict):
+            return None
+        return bitstreams._normalize_signature_value(first.get('value'))
+
+    @staticmethod
+    def _extract_remote_name(remote):
+        if not isinstance(remote, dict):
+            return None
+
+        name = bitstreams._normalize_signature_value(remote.get('name'))
+        if name:
+            return name
+
+        metadata = remote.get('metadata')
+        if isinstance(metadata, dict):
+            name = bitstreams._extract_metadata_title(metadata)
+            if name:
+                return name
+
+        if isinstance(metadata, list):
+            for entry in metadata:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get('key') == 'dc.title':
+                    return bitstreams._normalize_signature_value(entry.get('value'))
+
+        return None
+
+    @staticmethod
+    def _extract_remote_checksum(remote):
+        if not isinstance(remote, dict):
+            return None
+
+        checksum = remote.get('checkSum')
+        if isinstance(checksum, dict):
+            value = bitstreams._normalize_signature_value(checksum.get('value'))
+            if value:
+                return value
+
+        for key in ['checksum', 'checksumValue', 'checkSumValue']:
+            value = bitstreams._normalize_signature_value(remote.get(key))
+            if value:
+                return value
+
+        return None
+
+    @staticmethod
+    def _source_signature(params, data):
+        sequence_id = bitstreams._normalize_signature_value((params or {}).get('sequenceId'))
+        checksum_value = bitstreams._normalize_signature_value(
+            ((data or {}).get('checkSum') or {}).get('value'))
+        name = bitstreams._extract_metadata_title((data or {}).get('metadata'))
+        return name, sequence_id, checksum_value
+
+    @staticmethod
+    def _remote_signature(remote):
+        if not isinstance(remote, dict):
+            return None, None, None
+
+        sequence_id = bitstreams._normalize_signature_value(
+            remote.get('sequenceId', remote.get('sequence_id')))
+        checksum_value = bitstreams._extract_remote_checksum(remote)
+        name = bitstreams._extract_remote_name(remote)
+        return name, sequence_id, checksum_value
 
     @property
     def imported(self):
@@ -183,6 +290,8 @@ class bitstreams:
         checkpoint_counter = 0
         checkpoints_saved = 0
         diagnostic_invalid_response_logs = 0
+        recovered_by_lookup = 0
+        bundle_bitstreams_cache = {}
 
         path_assetstore = env["assetstore"]
         fallback_rel_path = None
@@ -203,14 +312,16 @@ class bitstreams:
 
         def _update_progress(pbar_ref):
             """Centralized progress-bar postfix update."""
-            pbar_ref.set_postfix(
-                imported=self._imported['bitstream'],
-                skipped_deleted=skipped_deleted,
-                resumed=skipped_already_imported,
-                errored=errored,
-                checkpoints=checkpoints_saved,
-                to_checkpoint=checkpoint_every - checkpoint_counter,
-            )
+            if hasattr(pbar_ref, 'set_postfix'):
+                pbar_ref.set_postfix(
+                    imported=self._imported['bitstream'],
+                    recovered=recovered_by_lookup,
+                    skipped_deleted=skipped_deleted,
+                    resumed=skipped_already_imported,
+                    errored=errored,
+                    checkpoints=checkpoints_saved,
+                    to_checkpoint=checkpoint_every - checkpoint_counter,
+                )
 
         def _record_error(b_id_val):
             """Record a failed bitstream id and emit diagnostics for repeated failures in testing mode."""
@@ -229,6 +340,53 @@ class bitstreams:
                     f'Many consecutive put_bitstream errors detected in testing mode [{subsequent_errors}]. '
                     f'Verify testing fallback bitstream on server assetstore: '
                     f'relative_path=[{fallback_rel_path}] full_path=[{fallback_full_path}] exists=[{exists_text}].')
+
+        def _mark_imported(b_id_val, uuid_val, recovered=False):
+            nonlocal checkpoint_counter, checkpoints_saved, subsequent_errors, recovered_by_lookup
+            self._id2uuid[str(b_id_val)] = str(uuid_val)
+            self._imported["bitstream"] += 1
+            subsequent_errors = 0
+            if recovered:
+                recovered_by_lookup += 1
+            checkpoint_counter += 1
+            if checkpoint_counter >= checkpoint_every:
+                checkpoint_counter = 0
+                checkpoints_saved += 1
+                self.serialize(cache_file)
+
+        def _fetch_bundle_bitstreams(bundle_uuid, force_refresh=False):
+            if not bundle_uuid:
+                return []
+            if force_refresh or bundle_uuid not in bundle_bitstreams_cache:
+                try:
+                    bundle_bitstreams_cache[bundle_uuid] = dspace.fetch_bundle_bitstreams(bundle_uuid) or []
+                except Exception as e:
+                    _logger.warning(
+                        f'Unable to fetch existing bundle bitstreams for [{bundle_uuid}]: [{str(e)}]')
+                    bundle_bitstreams_cache[bundle_uuid] = []
+            return bundle_bitstreams_cache.get(bundle_uuid, [])
+
+        def _find_existing_uuid(bundle_uuid, source_signature, force_refresh=False):
+            src_name, src_seq, src_checksum = source_signature
+            if not bundle_uuid:
+                return None
+            if src_name is None and src_seq is None and src_checksum is None:
+                return None
+
+            for remote in _fetch_bundle_bitstreams(bundle_uuid, force_refresh=force_refresh):
+                remote_name, remote_seq, remote_checksum = self._remote_signature(remote)
+
+                if src_seq is not None and src_seq != remote_seq:
+                    continue
+                if src_name is not None and src_name != remote_name:
+                    continue
+                if src_checksum is not None and src_checksum != remote_checksum:
+                    continue
+
+                remote_uuid = remote.get('id', remote.get('uuid'))
+                if remote_uuid is not None:
+                    return str(remote_uuid)
+            return None
 
         pbar = progress_bar(self._bs)
         for i, b in enumerate(pbar):
@@ -326,9 +484,30 @@ class bitstreams:
             # set primaryBundle_id from None to id
             if b_id in bundles.primary:
                 params['primaryBundle_id'] = bundles.uuid(bundles.primary[b_id])
+
+            source_signature = self._source_signature(params, data)
+            matched_uuid = _find_existing_uuid(params.get('bundle_id'), source_signature)
+            if matched_uuid is not None:
+                _mark_imported(b_id, matched_uuid, recovered=True)
+                _logger.warning(
+                    f'put_bitstream [{b_id}] reused existing UUID by signature match before POST: [{matched_uuid}]')
+                if (i + 1) % 200 == 0:
+                    _update_progress(pbar)
+                continue
+
             try:
                 resp = dspace.put_bitstream(params, data)
                 if not isinstance(resp, dict) or 'id' not in resp:
+                    recovered_uuid = _find_existing_uuid(
+                        params.get('bundle_id'), source_signature, force_refresh=True)
+                    if recovered_uuid is not None:
+                        _mark_imported(b_id, recovered_uuid, recovered=True)
+                        _logger.warning(
+                            f'put_bitstream [{b_id}] recovered existing UUID after invalid response: [{recovered_uuid}]')
+                        if (i + 1) % 200 == 0:
+                            _update_progress(pbar)
+                        continue
+
                     if b['deleted']:
                         _logger.warning(
                             f'put_bitstream [{b_id}] returned invalid response for deleted bitstream: [{resp}] - skipping')
@@ -345,18 +524,22 @@ class bitstreams:
                     _record_error(b_id)
                     _update_progress(pbar)
                     continue
-                self._id2uuid[str(b_id)] = resp['id']
-                self._imported["bitstream"] += 1
-                subsequent_errors = 0
-                checkpoint_counter += 1
-                if checkpoint_counter >= checkpoint_every:
-                    checkpoint_counter = 0
-                    checkpoints_saved += 1
-                    self.serialize(cache_file)
+                _mark_imported(b_id, resp['id'])
+                if checkpoint_counter == 0:
                     _update_progress(pbar)
                 if b['deleted']:
                     _logger.warning(f'Imported bitstream is deleted! UUID: {resp["id"]}')
             except Exception as e:
+                recovered_uuid = _find_existing_uuid(
+                    params.get('bundle_id'), source_signature, force_refresh=True)
+                if recovered_uuid is not None:
+                    _mark_imported(b_id, recovered_uuid, recovered=True)
+                    _logger.warning(
+                        f'put_bitstream [{b_id}] recovered existing UUID after exception: [{recovered_uuid}]')
+                    if (i + 1) % 200 == 0:
+                        _update_progress(pbar)
+                    continue
+
                 _logger.error(f'put_bitstream [{b_id}]: failed. Exception: [{str(e)}]')
                 _record_error(b_id)
                 _update_progress(pbar)
@@ -378,6 +561,9 @@ class bitstreams:
         if errored:
             _logger.warning(
                 f'Bitstream import skipped/errored [{errored}] records due to invalid/failed responses.')
+        if recovered_by_lookup:
+            _logger.warning(
+                f'Bitstream import recovered [{recovered_by_lookup}] records by existing bundle lookup.')
 
         # do bitstream checksum for the last imported bitstreams
         # these bitstreams can be less than 500, so it is not calculated in a loop
