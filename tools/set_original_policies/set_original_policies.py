@@ -632,8 +632,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Policy action to replace and create. Default: READ.",
     )
     parser.add_argument(
-        "--apply-to", default="both", choices=["bundle", "bitstreams", "both"],
-        help="Which resources to update within the ORIGINAL bundle. Default: both.",
+        "--apply-to", default="bundle", choices=["bundle", "bitstreams", "both"],
+        help="Which resources to update: the ORIGINAL bundle only, its bitstreams "
+             "only, or both. Default: bundle.",
     )
 
     parser.add_argument(

@@ -2,14 +2,15 @@
 
 Standalone tool that, for each given item **handle**, replaces all resource
 policies of a chosen **action** (default `READ`) on the item's **ORIGINAL**
-bundle and/or its bitstreams with a single policy granting that action to a
-configurable **group** (default `Administrator`).
+bundle (and optionally its bitstreams) with a single policy granting that
+action to a configurable **group** (default `Administrator`). By default only
+the bundle is updated; use `--apply-to` to include bitstreams.
 
 Typical use: embargo the original files of a set of records so only
 administrators can read them.
 
-It is fully self-contained: it depends only on `requests` and imports no other
-module from this repository (no `src/settings` / `project_settings` / `utils`).
+It is fully self-contained: it depends only on `requests` and imports nothing
+else from this project (no `src/settings` / `project_settings` / `utils`).
 
 ## Install
 
@@ -80,9 +81,11 @@ python set_original_policies.py ... --handles "12345/1001" --group "Embargo Mana
 python set_original_policies.py ... --handles "12345/1001" \
   --group "a8980286-7ec9-465c-b696-5dc218968292"
 
-# Replace WRITE policies instead of READ, only on the bundle (not bitstreams)
-python set_original_policies.py ... --handles "12345/1001" \
-  --action WRITE --apply-to bundle
+# Update the bundle AND all its bitstreams (default is bundle only)
+python set_original_policies.py ... --handles "12345/1001" --apply-to both
+
+# Replace WRITE policies instead of READ
+python set_original_policies.py ... --handles "12345/1001" --action WRITE
 ```
 
 ### Always dry-run first
@@ -104,7 +107,7 @@ python set_original_policies.py ... --handles "12345/1001" --dry-run
 | `--password` | env/prompt | Admin password (else `DSPACE_PASSWORD` env var, else prompt). |
 | `--group` | `Administrator` | Target group name **or** UUID. |
 | `--action` | `READ` | One of READ, WRITE, ADD, REMOVE, DELETE, ADMIN. |
-| `--apply-to` | `both` | `bundle`, `bitstreams`, or `both`. |
+| `--apply-to` | `bundle` | `bundle`, `bitstreams`, or `both`. |
 | `--dry-run` | off | Simulate without modifying policies. |
 | `--timeout-sec` | `30` | Per-request HTTP timeout. |
 | `--retry-count` | `3` | Retries on retryable failures (timeouts, 5xx, 429). |
