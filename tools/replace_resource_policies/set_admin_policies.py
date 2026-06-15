@@ -222,6 +222,39 @@ class DSpaceClient:
         self._refresh_csrf()
         _logger.info("Logged in successfully as %s", email)
 
+    def use_bearer_token(self, token: str) -> None:
+        """
+        Authenticate with a pre-obtained Bearer JWT instead of user/password login.
+
+        Useful when the instance only allows Shibboleth/SAML login: log in via the
+        browser, copy the JWT from the 'Authorization: Bearer <token>' request header
+        (DevTools -> Network), and pass it here. The token is short-lived (DSpace
+        default ~30 min), so run the script promptly after obtaining it.
+        """
+        token = token.strip()
+        # Accept either the raw token or a full "Bearer <token>" string.
+        if token.lower().startswith("bearer "):
+            token = token.split(" ", 1)[1].strip()
+        self.jwt = token
+        # We still need a CSRF token bound to *our* session for state-changing requests.
+        self._refresh_csrf()
+        # Verify the token is valid (and not expired) before doing any work.
+        response = self._request(
+            "GET",
+            f"{self.base_url}/api/authn/status",
+            headers={**self._auth_headers(), "Accept": "application/json"},
+            retries=self.retry_count,
+        )
+        response.raise_for_status()
+        status = response.json()
+        if not status.get("authenticated"):
+            raise RuntimeError(
+                "The provided --bearer-token is not valid or has expired. "
+                "Log in again via the browser and copy a fresh token."
+            )
+        email = status.get("_embedded", {}).get("eperson", {}).get("email", "<unknown>")
+        _logger.info("Authenticated via provided Bearer token as %s", email)
+
     def logout(self) -> None:
         if not self.jwt:
             return
@@ -238,20 +271,20 @@ class DSpaceClient:
     # Group / Admin lookup
     # ------------------------------------------------------------------
 
-    def find_administrator_group_uuid(self) -> str:
-        """Return the UUID of the built-in 'Administrator' group."""
+    def find_group_uuid(self, group_name: str) -> str:
+        """Return the UUID of a group by its exact name (e.g. 'Administrator', 'Anonymous')."""
         groups = self._get_all_pages(
-            f"{self.base_url}/api/eperson/groups/search/byMetadata?query=Administrator",
+            f"{self.base_url}/api/eperson/groups/search/byMetadata?query={group_name}",
             "groups",
         )
         for group in groups:
-            if group.get("name") == "Administrator":
+            if group.get("name") == group_name:
                 uuid = group["uuid"]
-                _logger.info("Found Administrator group UUID: %s", uuid)
+                _logger.info("Found '%s' group UUID: %s", group_name, uuid)
                 return uuid
         raise RuntimeError(
-            "Could not find the 'Administrator' group via the REST API. "
-            "Ensure the account has admin privileges."
+            f"Could not find the '{group_name}' group via the REST API. "
+            "Ensure the group name is correct and the account has admin privileges."
         )
 
     # ------------------------------------------------------------------
@@ -322,17 +355,16 @@ class DSpaceClient:
     # Item / Bundle / Bitstream
     # ------------------------------------------------------------------
 
-    def get_original_bundle(self, item_uuid: str) -> Optional[dict]:
-        """Return the ORIGINAL bundle object for the given item, or None."""
+    def get_original_bundles(self, item_uuid: str) -> list[dict]:
+        """Return all ORIGINAL bundle objects for the given item (an item may have more than one)."""
         bundles = self._get_all_pages(
             f"{self.base_url}/api/core/items/{item_uuid}/bundles",
             "bundles",
         )
-        for bundle in bundles:
-            if bundle.get("name") == "ORIGINAL":
-                return bundle
-        _logger.warning("No ORIGINAL bundle found for item %s", item_uuid)
-        return None
+        original_bundles = [b for b in bundles if b.get("name") == "ORIGINAL"]
+        if not original_bundles:
+            _logger.warning("No ORIGINAL bundle found for item %s", item_uuid)
+        return original_bundles
 
     def get_bitstreams(self, bundle_uuid: str) -> list:
         """Return all bitstream objects from the given bundle."""
@@ -378,29 +410,29 @@ class DSpaceClient:
         )
         return False
 
-    def create_read_policy(self, resource_uuid: str, admin_group_uuid: str) -> bool:
+    def create_read_policy(self, resource_uuid: str, group_uuid: str) -> bool:
         """
-        Create a READ resource policy on *resource_uuid* for the Administrator group.
+        Create a READ resource policy on *resource_uuid* for the target group.
         Returns True on success.
         """
         if self.dry_run:
             _logger.info(
                 "[DRY-RUN] Would POST READ policy resource=%s group=%s",
-                resource_uuid, admin_group_uuid,
+                resource_uuid, group_uuid,
             )
             return True
 
         response = self._request(
             "POST",
             f"{self.base_url}/api/authz/resourcepolicies",
-            params={"resource": resource_uuid, "group": admin_group_uuid},
+            params={"resource": resource_uuid, "group": group_uuid},
             json={"action": "READ", "type": "resourcepolicy"},
             headers={**self._auth_headers(), "Content-Type": "application/json"},
             retry_on_status=False,
         )
         if response.status_code in (200, 201):
             _logger.debug(
-                "Created READ policy for resource=%s group=%s", resource_uuid, admin_group_uuid
+                "Created READ policy for resource=%s group=%s", resource_uuid, group_uuid
             )
             return True
         _logger.error(
@@ -415,9 +447,9 @@ class DSpaceClient:
     # High-level operation
     # ------------------------------------------------------------------
 
-    def restrict_to_admin(self, resource_uuid: str, admin_group_uuid: str, label: str) -> bool:
+    def restrict_read_to_group(self, resource_uuid: str, group_uuid: str, group_name: str, label: str) -> bool:
         """
-        Replace all READ policies on *resource_uuid* with a single Administrator-only policy.
+        Replace all READ policies on *resource_uuid* with a single policy for *group_name*.
         *label* is used only for log messages (e.g. 'bundle', 'bitstream <name>').
         """
         existing_policies = self.get_read_policies(resource_uuid)
@@ -432,9 +464,9 @@ class DSpaceClient:
             if policy_id is not None:
                 all_deleted = self.delete_policy(policy_id) and all_deleted
 
-        created = self.create_read_policy(resource_uuid, admin_group_uuid)
+        created = self.create_read_policy(resource_uuid, group_uuid)
         if all_deleted and created:
-            _logger.info("  %s [%s]: READ policy set to Administrator only.", label, resource_uuid)
+            _logger.info("  %s [%s]: READ policy set to '%s' only.", label, resource_uuid, group_name)
             return True
         _logger.error("  %s [%s]: failed to fully update READ policy.", label, resource_uuid)
         return False
@@ -476,10 +508,11 @@ def collect_handles(raw_handles: Optional[str], repeated_handles: Optional[list[
 def process_handle(
     client: DSpaceClient,
     handle: str,
-    admin_group_uuid: str,
+    group_uuid: str,
+    group_name: str,
     continue_on_bitstream_error: bool = False,
 ) -> dict[str, Any]:
-    """Process one handle and restrict bundle + bitstreams to Administrator group."""
+    """Process one handle and set bundle + bitstreams READ policy to the target group."""
     result: dict[str, Any] = {
         "handle": handle,
         "success": False,
@@ -499,42 +532,30 @@ def process_handle(
 
     _logger.info("  Resolved to item UUID: %s", item_uuid)
 
-    original_bundle = client.get_original_bundle(item_uuid)
-    if not original_bundle:
+    original_bundles = client.get_original_bundles(item_uuid)
+    if not original_bundles:
         _logger.warning("Skipping handle %s (no ORIGINAL bundle).", handle)
         result["reason"] = "missing_original_bundle"
         return result
 
-    bundle_uuid = original_bundle["uuid"]
-    _logger.info("  ORIGINAL bundle UUID: %s", bundle_uuid)
-
-    bitstreams = client.get_bitstreams(bundle_uuid)
-    _logger.info("  Found %d bitstream(s) in ORIGINAL bundle.", len(bitstreams))
-    result["bitstreams_attempted"] = len(bitstreams)
-
-    if not client.restrict_to_admin(bundle_uuid, admin_group_uuid, "ORIGINAL bundle"):
-        result["reason"] = "bundle_policy_update_failed"
-        return result
+    _logger.info("  Found %d ORIGINAL bundle(s).", len(original_bundles))
 
     failed_bitstreams = 0
-    for bitstream in bitstreams:
-        bitstream_uuid = bitstream["uuid"]
-        bitstream_name = bitstream.get("name", bitstream_uuid)
-        if not client.restrict_to_admin(
-            bitstream_uuid,
-            admin_group_uuid,
-            f"bitstream '{bitstream_name}'",
-        ):
-            failed_bitstreams += 1
-            result["bitstreams_failed"] = failed_bitstreams
-            if continue_on_bitstream_error:
-                _logger.warning(
-                    "  bitstream '%s' [%s]: failed; continuing due to --continue-on-bitstream-error",
-                    bitstream_name,
-                    bitstream_uuid,
-                )
-                continue
-            result["reason"] = "bitstream_policy_update_failed"
+    for bundle_index, original_bundle in enumerate(original_bundles, start=1):
+        bundle_uuid = original_bundle["uuid"]
+        bundle_label = (
+            "ORIGINAL bundle"
+            if len(original_bundles) == 1
+            else f"ORIGINAL bundle #{bundle_index}/{len(original_bundles)}"
+        )
+        _logger.info("  %s UUID: %s", bundle_label, bundle_uuid)
+
+        bitstreams = client.get_bitstreams(bundle_uuid)
+        _logger.info("  Found %d bitstream(s) in %s.", len(bitstreams), bundle_label)
+        result["bitstreams_attempted"] += len(bitstreams)
+
+        if not client.restrict_read_to_group(bundle_uuid, group_uuid, group_name, bundle_label):
+            result["reason"] = "bundle_policy_update_failed"
             _logger.info(
                 "Handle %s summary: bitstreams attempted=%d, failed=%d",
                 handle,
@@ -542,6 +563,33 @@ def process_handle(
                 result["bitstreams_failed"],
             )
             return result
+
+        for bitstream in bitstreams:
+            bitstream_uuid = bitstream["uuid"]
+            bitstream_name = bitstream.get("name", bitstream_uuid)
+            if not client.restrict_read_to_group(
+                bitstream_uuid,
+                group_uuid,
+                group_name,
+                f"bitstream '{bitstream_name}'",
+            ):
+                failed_bitstreams += 1
+                result["bitstreams_failed"] = failed_bitstreams
+                if continue_on_bitstream_error:
+                    _logger.warning(
+                        "  bitstream '%s' [%s]: failed; continuing due to --continue-on-bitstream-error",
+                        bitstream_name,
+                        bitstream_uuid,
+                    )
+                    continue
+                result["reason"] = "bitstream_policy_update_failed"
+                _logger.info(
+                    "Handle %s summary: bitstreams attempted=%d, failed=%d",
+                    handle,
+                    result["bitstreams_attempted"],
+                    result["bitstreams_failed"],
+                )
+                return result
 
     if failed_bitstreams > 0:
         _logger.warning(
@@ -575,7 +623,8 @@ def process_handle(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Set READ policies on ORIGINAL bundles/bitstreams to Administrator only."
+        description="Set READ policies on ORIGINAL bundles/bitstreams to a single group "
+                    "(default: Administrator; use --group Anonymous to make them public)."
     )
     handles_group = parser.add_mutually_exclusive_group(required=True)
     handles_group.add_argument(
@@ -597,13 +646,29 @@ def main() -> None:
     )
     parser.add_argument(
         "--email",
-        required=True,
-        help="Admin account e-mail used for login.",
+        help="Admin account e-mail used for user/password login. "
+             "Not needed when --bearer-token is given.",
     )
     parser.add_argument(
         "--password",
-        required=True,
-        help="Admin password",
+        help="Admin password. Not needed when --bearer-token is given.",
+    )
+    parser.add_argument(
+        "--bearer-token",
+        help=(
+            "Pre-obtained DSpace JWT to authenticate with instead of --email/--password. "
+            "Use this when the instance only allows Shibboleth/SAML login: log in via the "
+            "browser, then copy the token from the 'Authorization: Bearer <token>' request "
+            "header (DevTools -> Network). The token is short-lived, so run promptly."
+        ),
+    )
+    parser.add_argument(
+        "--group",
+        default="Administrator",
+        help=(
+            "Exact name of the group that should get the READ policy "
+            "(default: 'Administrator'). Use 'Anonymous' to make the files publicly readable."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -651,11 +716,20 @@ def main() -> None:
         _logger.error("--retry-backoff-sec must be >= 0")
         sys.exit(1)
 
+    use_token = bool(args.bearer_token)
+    if not use_token and not (args.email and args.password):
+        _logger.error(
+            "Provide either --bearer-token, or both --email and --password."
+        )
+        sys.exit(1)
+
     _logger.info(
-        "Arguments: base_url=%s, email=%s, dry_run=%s, timeout_sec=%s, retry_count=%s, "
-        "retry_backoff_sec=%s, continue_on_bitstream_error=%s, handles_mode=%s",
+        "Arguments: base_url=%s, auth=%s, email=%s, group=%s, dry_run=%s, timeout_sec=%s, "
+        "retry_count=%s, retry_backoff_sec=%s, continue_on_bitstream_error=%s, handles_mode=%s",
         args.base_url,
-        args.email,
+        "bearer-token" if use_token else "password",
+        args.email if not use_token else "<token>",
+        args.group,
         args.dry_run,
         args.timeout_sec,
         args.retry_count,
@@ -679,8 +753,11 @@ def main() -> None:
     )
 
     try:
-        client.login(args.email, args.password)
-        admin_group_uuid = client.find_administrator_group_uuid()
+        if use_token:
+            client.use_bearer_token(args.bearer_token)
+        else:
+            client.login(args.email, args.password)
+        group_uuid = client.find_group_uuid(args.group)
 
         success_count = 0
         failure_count = 0
@@ -692,7 +769,8 @@ def main() -> None:
             handle_result = process_handle(
                 client,
                 handle,
-                admin_group_uuid,
+                group_uuid,
+                args.group,
                 continue_on_bitstream_error=args.continue_on_bitstream_error,
             )
 
