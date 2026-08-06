@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import threading
 # from json import JSONDecodeError
@@ -16,6 +17,20 @@ HTTP_RETRY_BACKOFF = 1.5
 HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
 HTTP_CONNECT_TIMEOUT = 10
 HTTP_READ_TIMEOUT = 120
+
+# The bitstream import endpoints re-read the whole file server-side to recompute
+# its MD5 before they answer, which takes minutes for multi-GB files. The generic
+# read timeout makes the client give up while the server is still working - and
+# the server commits anyway, which is how duplicate rows are created.
+BITSTREAM_IMPORT_URL = 'clarin/import/core/bitstream'
+HTTP_READ_TIMEOUT_BITSTREAM = int(
+    os.environ.get('DSPACE_IMPORT_BITSTREAM_READ_TIMEOUT', 3600))
+
+# Codes where a failed POST does NOT prove the server did no work: a 500 or a
+# proxy 502/504 can arrive after the request was fully processed and committed.
+# 408/429 are rejected before the controller runs, so they stay retryable even
+# for non-idempotent endpoints.
+HTTP_AMBIGUOUS_FAILURE_CODES = [500, 502, 503, 504]
 
 # Circuit breaker for persistent errors
 HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
@@ -100,11 +115,10 @@ class rest:
         # the caller side without a TypeError. Wrapping `session.request`
         # gives us the hardening behavior (no infinite hangs) uniformly for
         # GET/POST/PUT/DELETE without modifying the submodule.
-        _default_timeout = (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
         _orig_request = self.client.session.request
 
         def _request_with_default_timeout(method, url, **kwargs):
-            kwargs.setdefault("timeout", _default_timeout)
+            kwargs.setdefault("timeout", self._timeout_for(url))
             return _orig_request(method, url, **kwargs)
 
         self.client.session.request = _request_with_default_timeout
@@ -374,24 +388,6 @@ class rest:
             raise Exception(r)
         return response_to_json(r)
 
-    def fetch_bundle_bitstreams(self, bundle_uuid: str, page_size: int = 100):
-        """Fetch all bitstreams currently assigned to one bundle."""
-        page = 0
-        out = []
-        url = f'core/bundles/{bundle_uuid}/bitstreams'
-        while True:
-            r = self._fetch(url, self.get, '_embedded', params={'page': page, 'size': page_size})
-            if r is None:
-                break
-            chunk = r.get('bitstreams', []) if isinstance(r, dict) else []
-            if not chunk:
-                break
-            out.extend(chunk)
-            if len(chunk) < page_size:
-                break
-            page += 1
-        return out
-
     # =======
 
     def put_usermetadata(self, params: dict, data: dict):
@@ -420,11 +416,25 @@ class rest:
         if not r.ok:
             raise Exception(r)
 
+    @staticmethod
+    def _timeout_for(url):
+        """(connect, read) timeout for one request.
+
+            The bitstream import endpoints re-read the whole file server-side to
+            recompute its MD5 before answering. Substring match, so it also
+            covers `.../bitstream/checksum`.
+        """
+        if BITSTREAM_IMPORT_URL in str(url):
+            return (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT_BITSTREAM)
+        return (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
+
     def put_bitstream(self, param: dict, data: dict):
-        url = 'clarin/import/core/bitstream'
+        url = BITSTREAM_IMPORT_URL
         _logger.debug(f"Importing [][{param}] using [{url}]")
-        # Bitstream creation endpoint is non-idempotent in practice.
-        # Disable transient retries to avoid duplicate rows after read timeouts.
+        # Not idempotent: the server adds the bitstream to the bundle and
+        # commits even when the client has already given up, so a repeated POST
+        # creates a second bundle2bitstream row with a colliding bitstream_order
+        # and shadows a file.
         return list(self._iput(url, [data], [param], allow_transient_retry=False))[0]
 
     def put_com_logo(self, param: dict):
@@ -616,26 +626,22 @@ class rest:
         for i, data in enumerate(progress_bar(arr)):
             param = params[i] if params is not None else None
             result = self._post_with_retry(
-                url,
-                data,
-                param,
-                i,
-                len(arr),
-                allow_transient_retry=allow_transient_retry,
-            )
+                url, data, param, i, len(arr),
+                allow_transient_retry=allow_transient_retry)
             yield result
         _logger.debug(f"Imported [{url}] successfully")
 
-    def _post_with_retry(
-        self,
-        url: str,
-        data,
-        param,
-        item_index: int,
-        total_items: int,
-        allow_transient_retry: bool = True,
-    ):
-        """POST with retry logic for handling temporary server errors"""
+    def _post_with_retry(self, url: str, data, param, item_index: int, total_items: int,
+                         allow_transient_retry: bool = True):
+        """POST with retry logic for handling temporary server errors
+
+            Pass allow_transient_retry=False for endpoints that are not
+            idempotent. A read timeout, a dropped connection or an ambiguous 5xx
+            does not prove the server did no work, so repeating the POST can
+            commit the same object twice. Auth (401/403) and rate-limit
+            (408/429) retries stay enabled - those are rejected before the
+            request does any work.
+        """
 
         # Check if circuit breaker is blocking requests due to consecutive errors
         if self._is_circuit_breaker_open():
@@ -653,10 +659,10 @@ class rest:
 
         last_exception = None
         last_response = None
+        attempts_made = 0
 
-        max_attempts = HTTP_MAX_RETRIES if allow_transient_retry else 1
-
-        for attempt in range(max_attempts):
+        for attempt in range(HTTP_MAX_RETRIES):
+            attempts_made = attempt + 1
             try:
                 self._maybe_reauthenticate()
                 r = self.post(url, params=param, data=data)
@@ -677,7 +683,7 @@ class rest:
                                 )
                         if attempt > 0:
                             _logger.debug(
-                                f"POST [{url}] succeeded on attempt {attempt + 1}/{max_attempts}")
+                                f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
                         return js
                     except Exception:
                         return r
@@ -685,13 +691,13 @@ class rest:
                 # Handle auth errors (recoverable via re-auth)
                 elif r.status_code in [401, 403]:
                     last_response = r
-                    if attempt == max_attempts - 1:
+                    if attempt == HTTP_MAX_RETRIES - 1:
                         _logger.warning(
-                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{max_attempts}) - final attempt")
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
                         break
 
                     _logger.warning(
-                        f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{max_attempts}) - re-authenticating")
+                        f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - re-authenticating")
                     if not self._maybe_reauthenticate(force=True):
                         _logger.warning("Re-authentication failed")
                         break
@@ -701,21 +707,26 @@ class rest:
                 elif r.status_code in HTTP_RETRYABLE_CODES:
                     last_response = r
                     self._handle_circuit_breaker(r.status_code)
+                    if not allow_transient_retry and r.status_code in HTTP_AMBIGUOUS_FAILURE_CODES:
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}) - not "
+                            f"retried, endpoint is not idempotent and the server may have committed")
+                        break
                     retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
 
-                    if attempt == max_attempts - 1:
+                    if attempt == HTTP_MAX_RETRIES - 1:
                         # Last attempt - no retry will happen
                         _logger.warning(
-                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{max_attempts}) - final attempt")
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
                     elif attempt == 0:
                         # First attempt - log with retry info
                         _logger.warning(
-                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{max_attempts}) - retrying in {retry_delay}s")
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - retrying in {retry_delay}s")
                     else:
                         _logger.debug(
-                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{max_attempts})")
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES})")
 
-                    if attempt < max_attempts - 1:
+                    if attempt < HTTP_MAX_RETRIES - 1:
                         time.sleep(retry_delay)
 
                         # Re-authenticate on certain errors
@@ -734,16 +745,21 @@ class rest:
 
             except Exception as e:
                 last_exception = e
+                if not allow_transient_retry:
+                    _logger.warning(
+                        f"POST [{url}] exception (attempt {attempt + 1}) - not retried, "
+                        f"endpoint is not idempotent: {str(e)}")
+                    break
                 retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
 
                 if attempt == 0 or attempt == HTTP_MAX_RETRIES - 1:
                     _logger.warning(
-                        f"POST [{url}] exception (attempt {attempt + 1}/{max_attempts}): {str(e)}")
+                        f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
                 else:
                     _logger.debug(
-                        f"POST [{url}] exception (attempt {attempt + 1}/{max_attempts}): {str(e)}")
+                        f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
 
-                if attempt < max_attempts - 1:
+                if attempt < HTTP_MAX_RETRIES - 1:
                     time.sleep(retry_delay)
                     continue
 
@@ -767,7 +783,7 @@ class rest:
             error_detail = sanitize_log_content(
                 str(last_exception) if last_exception else "Unknown error")
 
-        msg = f"POST [{url}] for [{ascii_data}] failed after {max_attempts} attempts. Final error: {error_detail}"
+        msg = f"POST [{url}] for [{ascii_data}] failed after {attempts_made} attempts. Final error: {error_detail}"
         _logger.error(msg)
         return None
 
