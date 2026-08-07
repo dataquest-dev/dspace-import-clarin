@@ -65,11 +65,18 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
 
     def _returning(self, status_code):
         r = self._rest_instance()
+        r.forced_reauths = 0
+
+        def reauth(force=False):
+            if force:
+                r.forced_reauths += 1
+            return True
 
         def post(command, params=None, data=None):
             r.calls.append(command)
             return _Resp(status_code)
 
+        r._maybe_reauthenticate = reauth
         r.post = post
         return r
 
@@ -102,6 +109,19 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
             r.put_bitstream({"internal_id": "abc"}, {"name": "big.zip"})
             self.assertEqual(len(r.calls), _rest.HTTP_MAX_RETRIES,
                              f"HTTP {code} must keep its retries")
+
+    def test_expired_session_still_retries_and_reauthenticates(self):
+        # A multi-hour import outlives its token. 401/403 are rejected by
+        # @PreAuthorize("hasAuthority('ADMIN')") before the controller body
+        # runs, so nothing is created and retrying cannot duplicate a row -
+        # unlike a read timeout, where the server keeps working and commits.
+        for code in [401, 403]:
+            r = self._returning(code)
+            r.put_bitstream({"internal_id": "abc"}, {"name": "big.zip"})
+            self.assertEqual(len(r.calls), _rest.HTTP_MAX_RETRIES,
+                             f"HTTP {code} must keep its retries")
+            self.assertGreater(r.forced_reauths, 0,
+                               f"HTTP {code} must trigger re-authentication")
 
     def test_other_endpoints_still_retry(self):
         r = self._raising(requests.exceptions.ReadTimeout("Read timed out."))
