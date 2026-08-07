@@ -10,6 +10,25 @@ from dspace_rest_client import client  # noqa
 
 ANONYM_EMAIL = True
 
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Read a positive int from the environment, falling back on anything unusable.
+
+        A typo in the variable must not stop the whole import tool from starting.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        _logger.warning(
+            f"Ignoring [{name}]=[{raw}], expected a positive integer. Using [{default}].")
+        return default
+    return value
+
 # HTTP retry configuration
 HTTP_MAX_RETRIES = 3
 HTTP_RETRY_DELAY = 1  # seconds
@@ -23,8 +42,8 @@ HTTP_READ_TIMEOUT = 120
 # read timeout makes the client give up while the server is still working - and
 # the server commits anyway, which is how duplicate rows are created.
 BITSTREAM_IMPORT_URL = 'clarin/import/core/bitstream'
-HTTP_READ_TIMEOUT_BITSTREAM = int(
-    os.environ.get('DSPACE_IMPORT_BITSTREAM_READ_TIMEOUT', 3600))
+HTTP_READ_TIMEOUT_BITSTREAM = _positive_int_env(
+    'DSPACE_IMPORT_BITSTREAM_READ_TIMEOUT', 3600)
 
 # Codes where a failed POST does NOT prove the server did no work: a 500 or a
 # proxy 502/504 can arrive after the request was fully processed and committed.
@@ -410,7 +429,7 @@ class rest:
             on imported bitstreams that haven't already their checksum
             calculated.
         """
-        url = 'clarin/import/core/bitstream/checksum'
+        url = f'{BITSTREAM_IMPORT_URL}/checksum'
         _logger.debug(f"Checksums using [{url}]")
         r = self.post(url)
         if not r.ok:
@@ -676,7 +695,7 @@ class rest:
                         if content_len > 0:
                             js = response_to_json(r)
                         else:
-                            if 'clarin/import/core/bitstream' in str(url):
+                            if BITSTREAM_IMPORT_URL in str(url):
                                 _logger.warning(
                                     f"POST [{url}] returned HTTP {r.status_code} with empty body; "
                                     f"bitstream importer expects JSON with id. params=[{param}]"

@@ -130,6 +130,44 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
         self.assertEqual(len(r.calls), _rest.HTTP_MAX_RETRIES,
                          "idempotent endpoints must keep their retries")
 
+    def test_add_checksums_posts_under_the_bitstream_prefix(self):
+        # add_checksums() must post under the same prefix _timeout_for() matches
+        # on, otherwise it silently falls back to the 120s default while
+        # re-hashing a whole batch.
+        r = object.__new__(_rest.rest)
+        seen = []
+
+        def post(command, params=None, data=None):
+            seen.append(command)
+            resp = _Resp(200)
+            resp.ok = True
+            return resp
+
+        r.post = post
+        _rest.rest.add_checksums(r)
+
+        self.assertEqual(seen, [f"{_rest.BITSTREAM_IMPORT_URL}/checksum"])
+        self.assertEqual(
+            _rest.rest._timeout_for("http://h/api/" + seen[0]),
+            (_rest.HTTP_CONNECT_TIMEOUT, _rest.HTTP_READ_TIMEOUT_BITSTREAM))
+
+    def test_broken_env_value_falls_back_to_the_default(self):
+        for raw in ["", "3600s", "abc", "0", "-1"]:
+            with self.subTest(raw=raw):
+                os.environ["_TEST_TIMEOUT_ENV"] = raw
+                try:
+                    self.assertEqual(_rest._positive_int_env("_TEST_TIMEOUT_ENV", 3600), 3600)
+                finally:
+                    del os.environ["_TEST_TIMEOUT_ENV"]
+
+        os.environ["_TEST_TIMEOUT_ENV"] = "900"
+        try:
+            self.assertEqual(_rest._positive_int_env("_TEST_TIMEOUT_ENV", 3600), 900)
+        finally:
+            del os.environ["_TEST_TIMEOUT_ENV"]
+
+        self.assertEqual(_rest._positive_int_env("_TEST_TIMEOUT_ENV_UNSET", 3600), 3600)
+
     def test_bitstream_endpoint_gets_the_long_read_timeout(self):
         base = "http://dev-5.pc:88/repository/server/api/"
         long_t = (_rest.HTTP_CONNECT_TIMEOUT, _rest.HTTP_READ_TIMEOUT_BITSTREAM)
