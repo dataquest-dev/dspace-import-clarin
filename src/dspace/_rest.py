@@ -1,6 +1,8 @@
 import logging
 import time
 import threading
+
+import requests
 # from json import JSONDecodeError
 from ._http import response_to_json
 
@@ -16,6 +18,29 @@ HTTP_RETRY_BACKOFF = 1.5
 HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
 HTTP_CONNECT_TIMEOUT = 10
 HTTP_READ_TIMEOUT = 120
+
+# Codes where a failed POST does NOT prove the server did no work: a 500 or a
+# proxy 502/504 can arrive after the request was fully processed and committed.
+# A 503 usually comes from a proxy that never forwarded anything, but an
+# application 503 looks identical from here - and for this endpoint a wrong
+# retry costs a silently shadowed duplicate row, while a wrong give-up costs a
+# logged, countable gap. So it is treated as ambiguous too.
+# 408/429 are rejected before the controller runs, so they stay retryable even
+# for non-idempotent endpoints.
+HTTP_AMBIGUOUS_FAILURE_CODES = [500, 502, 503, 504]
+
+
+def _may_have_reached_server(exc, post_attempted: bool) -> bool:
+    """Could this failure have left work committed on the server?
+
+        Only relevant for non-idempotent endpoints, where repeating a POST is
+        safe exactly when the first one provably never arrived.
+    """
+    if not post_attempted:
+        # raised by _maybe_reauthenticate(), before anything was sent
+        return False
+    # the connection never came up, so no bytes left the client
+    return not isinstance(exc, requests.exceptions.ConnectTimeout)
 
 # Circuit breaker for persistent errors
 HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
@@ -62,7 +87,8 @@ class rest:
     """
 
     def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
-                 reauth_minutes: int = 20):
+                 reauth_minutes: int = 20, bitstream_read_timeout: int = 3600,
+                 bitstream_import_url: str = 'clarin/import/core/bitstream'):
         thread = threading.current_thread()
         _logger.debug(
             f"Initialise connection to DSpace REST backend [{endpoint}] "
@@ -77,6 +103,8 @@ class rest:
         self._auth = auth
         self._reauth_minutes = reauth_minutes
         self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
+        self._bitstream_read_timeout = bitstream_read_timeout
+        self._bitstream_import_url = bitstream_import_url
         self._last_auth_ts = 0.0
 
         # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
@@ -100,11 +128,10 @@ class rest:
         # the caller side without a TypeError. Wrapping `session.request`
         # gives us the hardening behavior (no infinite hangs) uniformly for
         # GET/POST/PUT/DELETE without modifying the submodule.
-        _default_timeout = (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
         _orig_request = self.client.session.request
 
         def _request_with_default_timeout(method, url, **kwargs):
-            kwargs.setdefault("timeout", _default_timeout)
+            kwargs.setdefault("timeout", self._timeout_for(url))
             return _orig_request(method, url, **kwargs)
 
         self.client.session.request = _request_with_default_timeout
@@ -143,6 +170,8 @@ class rest:
             self._password,
             self._auth,
             self._reauth_minutes,
+            self._bitstream_read_timeout,
+            self._bitstream_import_url,
         )
 
     def verify_authentication(self, force: bool = True):
@@ -396,16 +425,33 @@ class rest:
             on imported bitstreams that haven't already their checksum
             calculated.
         """
-        url = 'clarin/import/core/bitstream/checksum'
+        url = f'{self._bitstream_import_url}/checksum'
         _logger.debug(f"Checksums using [{url}]")
         r = self.post(url)
         if not r.ok:
             raise Exception(r)
 
+    def _timeout_for(self, url):
+        """(connect, read) timeout for one request.
+
+            The bitstream import endpoints re-read the whole file server-side to
+            recompute its MD5 before answering, which takes minutes for multi-GB
+            files - the generic read timeout would make the client give up while
+            the server is still working, and the server commits anyway. Substring
+            match, so it also covers `.../bitstream/checksum`.
+        """
+        if self._bitstream_import_url in str(url):
+            return (HTTP_CONNECT_TIMEOUT, self._bitstream_read_timeout)
+        return (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
+
     def put_bitstream(self, param: dict, data: dict):
-        url = 'clarin/import/core/bitstream'
+        url = self._bitstream_import_url
         _logger.debug(f"Importing [][{param}] using [{url}]")
-        return list(self._iput(url, [data], [param]))[0]
+        # Not idempotent: the server adds the bitstream to the bundle and
+        # commits even when the client has already given up, so a repeated POST
+        # creates a second bundle2bitstream row with a colliding bitstream_order
+        # and shadows a file.
+        return list(self._iput(url, [data], [param], allow_transient_retry=False))[0]
 
     def put_com_logo(self, param: dict):
         url = 'clarin/import/logo/community'
@@ -588,19 +634,30 @@ class rest:
         list(self._iput(url, arr, params))
         return len(arr)
 
-    def _iput(self, url: str, arr: list, params=None):
+    def _iput(self, url: str, arr: list, params=None, allow_transient_retry: bool = True):
         _logger.debug(f"Importing {len(arr)} using [{url}]")
         if params is not None:
             assert len(params) == len(arr)
 
         for i, data in enumerate(progress_bar(arr)):
             param = params[i] if params is not None else None
-            result = self._post_with_retry(url, data, param, i, len(arr))
+            result = self._post_with_retry(
+                url, data, param, i, len(arr),
+                allow_transient_retry=allow_transient_retry)
             yield result
         _logger.debug(f"Imported [{url}] successfully")
 
-    def _post_with_retry(self, url: str, data, param, item_index: int, total_items: int):
-        """POST with retry logic for handling temporary server errors"""
+    def _post_with_retry(self, url: str, data, param, item_index: int, total_items: int,
+                         allow_transient_retry: bool = True):
+        """POST with retry logic for handling temporary server errors
+
+            Pass allow_transient_retry=False for endpoints that are not
+            idempotent. A read timeout, a dropped connection or an ambiguous 5xx
+            does not prove the server did no work, so repeating the POST can
+            commit the same object twice. Auth (401/403) and rate-limit
+            (408/429) retries stay enabled - those are rejected before the
+            request does any work.
+        """
 
         # Check if circuit breaker is blocking requests due to consecutive errors
         if self._is_circuit_breaker_open():
@@ -618,10 +675,14 @@ class rest:
 
         last_exception = None
         last_response = None
+        attempts_made = 0
 
         for attempt in range(HTTP_MAX_RETRIES):
+            attempts_made = attempt + 1
+            post_attempted = False
             try:
                 self._maybe_reauthenticate()
+                post_attempted = True
                 r = self.post(url, params=param, data=data)
 
                 if r.ok:
@@ -633,7 +694,7 @@ class rest:
                         if content_len > 0:
                             js = response_to_json(r)
                         else:
-                            if 'clarin/import/core/bitstream' in str(url):
+                            if self._bitstream_import_url in str(url):
                                 _logger.warning(
                                     f"POST [{url}] returned HTTP {r.status_code} with empty body; "
                                     f"bitstream importer expects JSON with id. params=[{param}]"
@@ -664,6 +725,11 @@ class rest:
                 elif r.status_code in HTTP_RETRYABLE_CODES:
                     last_response = r
                     self._handle_circuit_breaker(r.status_code)
+                    if not allow_transient_retry and r.status_code in HTTP_AMBIGUOUS_FAILURE_CODES:
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}) - not "
+                            f"retried, endpoint is not idempotent and the server may have committed")
+                        break
                     retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
 
                     if attempt == HTTP_MAX_RETRIES - 1:
@@ -697,6 +763,11 @@ class rest:
 
             except Exception as e:
                 last_exception = e
+                if not allow_transient_retry and _may_have_reached_server(e, post_attempted):
+                    _logger.warning(
+                        f"POST [{url}] exception (attempt {attempt + 1}) - not retried, "
+                        f"endpoint is not idempotent and the request may have arrived: {str(e)}")
+                    break
                 retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
 
                 if attempt == 0 or attempt == HTTP_MAX_RETRIES - 1:
@@ -730,7 +801,7 @@ class rest:
             error_detail = sanitize_log_content(
                 str(last_exception) if last_exception else "Unknown error")
 
-        msg = f"POST [{url}] for [{ascii_data}] failed after {HTTP_MAX_RETRIES} attempts. Final error: {error_detail}"
+        msg = f"POST [{url}] for [{ascii_data}] failed after {attempts_made} attempts. Final error: {error_detail}"
         _logger.error(msg)
         return None
 

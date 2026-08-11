@@ -37,6 +37,19 @@ class bitstreams:
                                    "(select metadata_field_id from metadatafieldregistry "
                                    "where qualifier = 'redirectToURL')"],
             "right": ["val", 0]
+        },
+        {
+            # Two bitstreams at the same (bundle_id, bitstream_order) make
+            # Hibernate's @OrderColumn materialize only one of them - the other
+            # is invisible to REST/OAI/Item View while still sitting in the DB.
+            "name": "bitstream_duplicate_bundle_order",
+            "left": ["sql", "db7", "one", "select count(*) from ("
+                                   " select bundle_id, bitstream_order"
+                                   " from bundle2bitstream"
+                                   " group by bundle_id, bitstream_order"
+                                   " having count(*) > 1"
+                                   ") dup"],
+            "right": ["val", 0]
         }
     ]
 

@@ -235,6 +235,7 @@ if __name__ == "__main__":
         env["backend"]["password"],
         env["backend"]["authentication"],
         env["backend"].get("reauth_minutes", 20),
+        env["backend"].get("bitstream_read_timeout", 3600),
     )
     checkpoint_ts = log_checkpoint("backend_connection_ready", checkpoint_ts)
 
