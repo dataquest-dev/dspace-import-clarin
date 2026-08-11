@@ -1,3 +1,4 @@
+import inspect
 import os
 import sys
 import types
@@ -134,7 +135,8 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
         # add_checksums() must post under the same prefix _timeout_for() matches
         # on, otherwise it silently falls back to the 120s default while
         # re-hashing a whole batch.
-        r = object.__new__(_rest.rest)
+        r = self._rest_instance()
+        r._bitstream_read_timeout = 3600
         seen = []
 
         def post(command, params=None, data=None):
@@ -147,36 +149,69 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
         _rest.rest.add_checksums(r)
 
         self.assertEqual(seen, [f"{_rest.BITSTREAM_IMPORT_URL}/checksum"])
-        self.assertEqual(
-            _rest.rest._timeout_for("http://h/api/" + seen[0]),
-            (_rest.HTTP_CONNECT_TIMEOUT, _rest.HTTP_READ_TIMEOUT_BITSTREAM))
+        self.assertEqual(r._timeout_for("http://h/api/" + seen[0]),
+                         (_rest.HTTP_CONNECT_TIMEOUT, 3600))
 
-    def test_broken_env_value_falls_back_to_the_default(self):
-        for raw in ["", "3600s", "abc", "0", "-1"]:
-            with self.subTest(raw=raw):
-                os.environ["_TEST_TIMEOUT_ENV"] = raw
-                try:
-                    self.assertEqual(_rest._positive_int_env("_TEST_TIMEOUT_ENV", 3600), 3600)
-                finally:
-                    del os.environ["_TEST_TIMEOUT_ENV"]
-
-        os.environ["_TEST_TIMEOUT_ENV"] = "900"
-        try:
-            self.assertEqual(_rest._positive_int_env("_TEST_TIMEOUT_ENV", 3600), 900)
-        finally:
-            del os.environ["_TEST_TIMEOUT_ENV"]
-
-        self.assertEqual(_rest._positive_int_env("_TEST_TIMEOUT_ENV_UNSET", 3600), 3600)
-
-    def test_bitstream_endpoint_gets_the_long_read_timeout(self):
+    def test_bitstream_endpoint_gets_the_configured_read_timeout(self):
         base = "http://dev-5.pc:88/repository/server/api/"
-        long_t = (_rest.HTTP_CONNECT_TIMEOUT, _rest.HTTP_READ_TIMEOUT_BITSTREAM)
+        r = self._rest_instance()
+        r._bitstream_read_timeout = 7200
+        long_t = (_rest.HTTP_CONNECT_TIMEOUT, 7200)
         short_t = (_rest.HTTP_CONNECT_TIMEOUT, _rest.HTTP_READ_TIMEOUT)
 
-        self.assertEqual(_rest.rest._timeout_for(base + "clarin/import/core/bitstream"), long_t)
-        self.assertEqual(_rest.rest._timeout_for(base + "clarin/import/core/bitstream/checksum"), long_t)
-        self.assertEqual(_rest.rest._timeout_for(base + "clarin/import/core/item"), short_t)
-        self.assertGreater(_rest.HTTP_READ_TIMEOUT_BITSTREAM, _rest.HTTP_READ_TIMEOUT)
+        self.assertEqual(r._timeout_for(base + "clarin/import/core/bitstream"), long_t)
+        self.assertEqual(r._timeout_for(base + "clarin/import/core/bitstream/checksum"), long_t)
+        self.assertEqual(r._timeout_for(base + "clarin/import/core/item"), short_t)
+
+
+class TestBitstreamReadTimeoutIsConfigurable(unittest.TestCase):
+    """
+        The timeout is a constructor argument fed from
+        project_settings["backend"]["bitstream_read_timeout"], like
+        reauth_minutes - not a module global, so it stays overridable
+        via `--config backend.bitstream_read_timeout=...`.
+    """
+
+    def test_default_matches_project_settings(self):
+        src_dir = os.path.join(ROOT_DIR, "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        import project_settings
+
+        configured = project_settings.settings["backend"]["bitstream_read_timeout"]
+        ctor_default = inspect.signature(
+            _rest.rest.__init__).parameters["bitstream_read_timeout"].default
+
+        self.assertEqual(ctor_default, configured)
+        self.assertGreater(configured, _rest.HTTP_READ_TIMEOUT)
+
+    def test_repo_import_passes_the_setting_to_the_constructor(self):
+        # A default that never reaches the client is worse than no default:
+        # the import would silently keep the 120s timeout that caused #878.
+        with open(os.path.join(ROOT_DIR, "src", "repo_import.py"), encoding="utf-8") as fin:
+            source = fin.read()
+
+        self.assertIn('env["backend"].get("bitstream_read_timeout"', source)
+
+    def test_worker_clients_inherit_the_timeout(self):
+        # Bitstreams are imported by spawned workers, so a timeout that stops
+        # at the main client would not protect the requests that need it.
+        recorded = []
+        r = object.__new__(_rest.rest)
+        r.endpoint = "http://h/api"
+        r._user, r._password, r._auth = "u", "p", False
+        r._reauth_minutes, r._bitstream_read_timeout = 20, 7200
+
+        original = _rest.rest.__init__
+        _rest.rest.__init__ = lambda self, *a, **kw: recorded.append((a, kw))
+        try:
+            _rest.rest.spawn_worker_client(r)
+        finally:
+            _rest.rest.__init__ = original
+
+        self.assertEqual(len(recorded), 1)
+        args, kwargs = recorded[0]
+        self.assertIn(7200, list(args) + list(kwargs.values()))
 
 
 if __name__ == "__main__":

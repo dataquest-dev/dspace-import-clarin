@@ -1,5 +1,4 @@
 import logging
-import os
 import time
 import threading
 # from json import JSONDecodeError
@@ -9,25 +8,6 @@ _logger = logging.getLogger("dspace.rest")
 from dspace_rest_client import client  # noqa
 
 ANONYM_EMAIL = True
-
-
-def _positive_int_env(name: str, default: int) -> int:
-    """Read a positive int from the environment, falling back on anything unusable.
-
-        A typo in the variable must not stop the whole import tool from starting.
-    """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
-    if value <= 0:
-        _logger.warning(
-            f"Ignoring [{name}]=[{raw}], expected a positive integer. Using [{default}].")
-        return default
-    return value
 
 # HTTP retry configuration
 HTTP_MAX_RETRIES = 3
@@ -40,10 +20,9 @@ HTTP_READ_TIMEOUT = 120
 # The bitstream import endpoints re-read the whole file server-side to recompute
 # its MD5 before they answer, which takes minutes for multi-GB files. The generic
 # read timeout makes the client give up while the server is still working - and
-# the server commits anyway, which is how duplicate rows are created.
+# the server commits anyway, which is how duplicate rows are created. The
+# longer timeout is `backend.bitstream_read_timeout` in project_settings.
 BITSTREAM_IMPORT_URL = 'clarin/import/core/bitstream'
-HTTP_READ_TIMEOUT_BITSTREAM = _positive_int_env(
-    'DSPACE_IMPORT_BITSTREAM_READ_TIMEOUT', 3600)
 
 # Codes where a failed POST does NOT prove the server did no work: a 500 or a
 # proxy 502/504 can arrive after the request was fully processed and committed.
@@ -96,7 +75,7 @@ class rest:
     """
 
     def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
-                 reauth_minutes: int = 20):
+                 reauth_minutes: int = 20, bitstream_read_timeout: int = 3600):
         thread = threading.current_thread()
         _logger.debug(
             f"Initialise connection to DSpace REST backend [{endpoint}] "
@@ -111,6 +90,7 @@ class rest:
         self._auth = auth
         self._reauth_minutes = reauth_minutes
         self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
+        self._bitstream_read_timeout = bitstream_read_timeout
         self._last_auth_ts = 0.0
 
         # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
@@ -176,6 +156,7 @@ class rest:
             self._password,
             self._auth,
             self._reauth_minutes,
+            self._bitstream_read_timeout,
         )
 
     def verify_authentication(self, force: bool = True):
@@ -435,8 +416,7 @@ class rest:
         if not r.ok:
             raise Exception(r)
 
-    @staticmethod
-    def _timeout_for(url):
+    def _timeout_for(self, url):
         """(connect, read) timeout for one request.
 
             The bitstream import endpoints re-read the whole file server-side to
@@ -444,7 +424,7 @@ class rest:
             covers `.../bitstream/checksum`.
         """
         if BITSTREAM_IMPORT_URL in str(url):
-            return (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT_BITSTREAM)
+            return (HTTP_CONNECT_TIMEOUT, self._bitstream_read_timeout)
         return (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
 
     def put_bitstream(self, param: dict, data: dict):

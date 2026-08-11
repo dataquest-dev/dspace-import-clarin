@@ -15,6 +15,10 @@ settings = {
         "password": "admin",
         "authentication": True,
         "reauth_minutes": 20,
+        # The bitstream import endpoint re-hashes the whole file before it
+        # answers, so it needs far more than the generic 120s read timeout.
+        # Raise it if the assetstore sits on slow storage.
+        "bitstream_read_timeout": 3600,
         "import_workers": 6,
         "ignore_deleted_bitstreams": True,
         "testing": True,
