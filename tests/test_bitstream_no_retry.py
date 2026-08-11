@@ -49,6 +49,8 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
     def _rest_instance(self):
         r = object.__new__(_rest.rest)
         r.calls = []
+        r._bitstream_import_url = _rest.BITSTREAM_IMPORT_URL
+        r._bitstream_read_timeout = 3600
         r._is_circuit_breaker_open = lambda: False
         r._handle_circuit_breaker = lambda code: None
         r._maybe_reauthenticate = lambda force=False: True
@@ -136,7 +138,6 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
         # on, otherwise it silently falls back to the 120s default while
         # re-hashing a whole batch.
         r = self._rest_instance()
-        r._bitstream_read_timeout = 3600
         seen = []
 
         def post(command, params=None, data=None):
@@ -162,6 +163,60 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
         self.assertEqual(r._timeout_for(base + "clarin/import/core/bitstream"), long_t)
         self.assertEqual(r._timeout_for(base + "clarin/import/core/bitstream/checksum"), long_t)
         self.assertEqual(r._timeout_for(base + "clarin/import/core/item"), short_t)
+
+
+class TestBitstreamEndpointIsAMemberVariable(unittest.TestCase):
+    """
+        The import path is `self._bitstream_import_url`, settable from the
+        constructor - the module constant is only its default. Every site that
+        used the constant must read the member, otherwise a client constructed
+        with a different path would post to one endpoint and time it as another.
+    """
+
+    def _client(self, url):
+        r = object.__new__(_rest.rest)
+        r._bitstream_import_url = url
+        r._bitstream_read_timeout = 7200
+        return r
+
+    def test_ctor_default_is_the_module_constant(self):
+        self.assertEqual(
+            inspect.signature(
+                _rest.rest.__init__).parameters["bitstream_import_url"].default,
+            _rest.BITSTREAM_IMPORT_URL)
+
+    def test_put_bitstream_posts_to_the_configured_path(self):
+        r = self._client("some/other/bitstream")
+        seen = []
+        r._iput = lambda url, data, params, **kw: seen.append(url) or iter([None])
+
+        _rest.rest.put_bitstream(r, {}, {})
+
+        self.assertEqual(seen, ["some/other/bitstream"])
+
+    def test_add_checksums_follows_the_configured_path(self):
+        r = self._client("some/other/bitstream")
+        seen = []
+
+        def post(command, params=None, data=None):
+            seen.append(command)
+            resp = _Resp(200)
+            resp.ok = True
+            return resp
+
+        r.post = post
+        _rest.rest.add_checksums(r)
+
+        self.assertEqual(seen, ["some/other/bitstream/checksum"])
+
+    def test_timeout_follows_the_configured_path(self):
+        r = self._client("some/other/bitstream")
+
+        self.assertEqual(r._timeout_for("http://h/api/some/other/bitstream"),
+                         (_rest.HTTP_CONNECT_TIMEOUT, 7200))
+        # the old hardcoded path must no longer win the long timeout
+        self.assertEqual(r._timeout_for("http://h/api/" + _rest.BITSTREAM_IMPORT_URL),
+                         (_rest.HTTP_CONNECT_TIMEOUT, _rest.HTTP_READ_TIMEOUT))
 
 
 class TestBitstreamReadTimeoutIsConfigurable(unittest.TestCase):
@@ -193,14 +248,15 @@ class TestBitstreamReadTimeoutIsConfigurable(unittest.TestCase):
 
         self.assertIn('env["backend"].get("bitstream_read_timeout"', source)
 
-    def test_worker_clients_inherit_the_timeout(self):
-        # Bitstreams are imported by spawned workers, so a timeout that stops
-        # at the main client would not protect the requests that need it.
+    def test_worker_clients_inherit_the_bitstream_settings(self):
+        # Bitstreams are imported by spawned workers, so settings that stop at
+        # the main client would not reach the requests that need them.
         recorded = []
         r = object.__new__(_rest.rest)
         r.endpoint = "http://h/api"
         r._user, r._password, r._auth = "u", "p", False
         r._reauth_minutes, r._bitstream_read_timeout = 20, 7200
+        r._bitstream_import_url = "some/other/bitstream"
 
         original = _rest.rest.__init__
         _rest.rest.__init__ = lambda self, *a, **kw: recorded.append((a, kw))
@@ -211,7 +267,9 @@ class TestBitstreamReadTimeoutIsConfigurable(unittest.TestCase):
 
         self.assertEqual(len(recorded), 1)
         args, kwargs = recorded[0]
-        self.assertIn(7200, list(args) + list(kwargs.values()))
+        passed = list(args) + list(kwargs.values())
+        self.assertIn(7200, passed)
+        self.assertIn("some/other/bitstream", passed)
 
 
 if __name__ == "__main__":

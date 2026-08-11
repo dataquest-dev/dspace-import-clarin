@@ -21,7 +21,8 @@ HTTP_READ_TIMEOUT = 120
 # its MD5 before they answer, which takes minutes for multi-GB files. The generic
 # read timeout makes the client give up while the server is still working - and
 # the server commits anyway, which is how duplicate rows are created. The
-# longer timeout is `backend.bitstream_read_timeout` in project_settings.
+# longer timeout is `backend.bitstream_read_timeout` in project_settings; the
+# path below is only the default for the `rest` constructor argument.
 BITSTREAM_IMPORT_URL = 'clarin/import/core/bitstream'
 
 # Codes where a failed POST does NOT prove the server did no work: a 500 or a
@@ -75,7 +76,8 @@ class rest:
     """
 
     def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
-                 reauth_minutes: int = 20, bitstream_read_timeout: int = 3600):
+                 reauth_minutes: int = 20, bitstream_read_timeout: int = 3600,
+                 bitstream_import_url: str = BITSTREAM_IMPORT_URL):
         thread = threading.current_thread()
         _logger.debug(
             f"Initialise connection to DSpace REST backend [{endpoint}] "
@@ -91,6 +93,7 @@ class rest:
         self._reauth_minutes = reauth_minutes
         self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
         self._bitstream_read_timeout = bitstream_read_timeout
+        self._bitstream_import_url = bitstream_import_url
         self._last_auth_ts = 0.0
 
         # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
@@ -157,6 +160,7 @@ class rest:
             self._auth,
             self._reauth_minutes,
             self._bitstream_read_timeout,
+            self._bitstream_import_url,
         )
 
     def verify_authentication(self, force: bool = True):
@@ -410,7 +414,7 @@ class rest:
             on imported bitstreams that haven't already their checksum
             calculated.
         """
-        url = f'{BITSTREAM_IMPORT_URL}/checksum'
+        url = f'{self._bitstream_import_url}/checksum'
         _logger.debug(f"Checksums using [{url}]")
         r = self.post(url)
         if not r.ok:
@@ -423,12 +427,12 @@ class rest:
             recompute its MD5 before answering. Substring match, so it also
             covers `.../bitstream/checksum`.
         """
-        if BITSTREAM_IMPORT_URL in str(url):
+        if self._bitstream_import_url in str(url):
             return (HTTP_CONNECT_TIMEOUT, self._bitstream_read_timeout)
         return (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
 
     def put_bitstream(self, param: dict, data: dict):
-        url = BITSTREAM_IMPORT_URL
+        url = self._bitstream_import_url
         _logger.debug(f"Importing [][{param}] using [{url}]")
         # Not idempotent: the server adds the bitstream to the bundle and
         # commits even when the client has already given up, so a repeated POST
@@ -675,7 +679,7 @@ class rest:
                         if content_len > 0:
                             js = response_to_json(r)
                         else:
-                            if BITSTREAM_IMPORT_URL in str(url):
+                            if self._bitstream_import_url in str(url):
                                 _logger.warning(
                                     f"POST [{url}] returned HTTP {r.status_code} with empty body; "
                                     f"bitstream importer expects JSON with id. params=[{param}]"
