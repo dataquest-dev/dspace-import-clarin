@@ -30,6 +30,8 @@ def _load_rest():
 
 _rest = _load_rest()
 
+IMPORT_URL = "clarin/import/core/bitstream"
+
 
 class _Resp:
     def __init__(self, code):
@@ -49,7 +51,7 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
     def _rest_instance(self):
         r = object.__new__(_rest.rest)
         r.calls = []
-        r._bitstream_import_url = _rest.BITSTREAM_IMPORT_URL
+        r._bitstream_import_url = IMPORT_URL
         r._bitstream_read_timeout = 3600
         r._is_circuit_breaker_open = lambda: False
         r._handle_circuit_breaker = lambda code: None
@@ -95,7 +97,7 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
         result = r.put_bitstream({"internal_id": "abc"}, {"name": "big.zip"})
 
         self.assertIsNone(result)
-        self.assertEqual(r.calls, [_rest.BITSTREAM_IMPORT_URL],
+        self.assertEqual(r.calls, [IMPORT_URL],
                          "bitstream POST must not be repeated after a read timeout")
 
     def test_ambiguous_5xx_does_not_repeat_the_post(self):
@@ -149,7 +151,7 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
         r.post = post
         _rest.rest.add_checksums(r)
 
-        self.assertEqual(seen, [f"{_rest.BITSTREAM_IMPORT_URL}/checksum"])
+        self.assertEqual(seen, [f"{IMPORT_URL}/checksum"])
         self.assertEqual(r._timeout_for("http://h/api/" + seen[0]),
                          (_rest.HTTP_CONNECT_TIMEOUT, 3600))
 
@@ -179,11 +181,11 @@ class TestBitstreamEndpointIsAMemberVariable(unittest.TestCase):
         r._bitstream_read_timeout = 7200
         return r
 
-    def test_ctor_default_is_the_module_constant(self):
+    def test_ctor_default_is_the_server_endpoint(self):
         self.assertEqual(
             inspect.signature(
                 _rest.rest.__init__).parameters["bitstream_import_url"].default,
-            _rest.BITSTREAM_IMPORT_URL)
+            IMPORT_URL)
 
     def test_put_bitstream_posts_to_the_configured_path(self):
         r = self._client("some/other/bitstream")
@@ -215,7 +217,7 @@ class TestBitstreamEndpointIsAMemberVariable(unittest.TestCase):
         self.assertEqual(r._timeout_for("http://h/api/some/other/bitstream"),
                          (_rest.HTTP_CONNECT_TIMEOUT, 7200))
         # the old hardcoded path must no longer win the long timeout
-        self.assertEqual(r._timeout_for("http://h/api/" + _rest.BITSTREAM_IMPORT_URL),
+        self.assertEqual(r._timeout_for("http://h/api/" + IMPORT_URL),
                          (_rest.HTTP_CONNECT_TIMEOUT, _rest.HTTP_READ_TIMEOUT))
 
 

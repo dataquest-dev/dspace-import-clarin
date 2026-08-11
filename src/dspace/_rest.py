@@ -17,14 +17,6 @@ HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
 HTTP_CONNECT_TIMEOUT = 10
 HTTP_READ_TIMEOUT = 120
 
-# The bitstream import endpoints re-read the whole file server-side to recompute
-# its MD5 before they answer, which takes minutes for multi-GB files. The generic
-# read timeout makes the client give up while the server is still working - and
-# the server commits anyway, which is how duplicate rows are created. The
-# longer timeout is `backend.bitstream_read_timeout` in project_settings; the
-# path below is only the default for the `rest` constructor argument.
-BITSTREAM_IMPORT_URL = 'clarin/import/core/bitstream'
-
 # Codes where a failed POST does NOT prove the server did no work: a 500 or a
 # proxy 502/504 can arrive after the request was fully processed and committed.
 # 408/429 are rejected before the controller runs, so they stay retryable even
@@ -77,7 +69,7 @@ class rest:
 
     def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
                  reauth_minutes: int = 20, bitstream_read_timeout: int = 3600,
-                 bitstream_import_url: str = BITSTREAM_IMPORT_URL):
+                 bitstream_import_url: str = 'clarin/import/core/bitstream'):
         thread = threading.current_thread()
         _logger.debug(
             f"Initialise connection to DSpace REST backend [{endpoint}] "
@@ -424,8 +416,10 @@ class rest:
         """(connect, read) timeout for one request.
 
             The bitstream import endpoints re-read the whole file server-side to
-            recompute its MD5 before answering. Substring match, so it also
-            covers `.../bitstream/checksum`.
+            recompute its MD5 before answering, which takes minutes for multi-GB
+            files - the generic read timeout would make the client give up while
+            the server is still working, and the server commits anyway. Substring
+            match, so it also covers `.../bitstream/checksum`.
         """
         if self._bitstream_import_url in str(url):
             return (HTTP_CONNECT_TIMEOUT, self._bitstream_read_timeout)
