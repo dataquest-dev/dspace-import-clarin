@@ -1,6 +1,8 @@
 import logging
 import time
 import threading
+
+import requests
 # from json import JSONDecodeError
 from ._http import response_to_json
 
@@ -19,9 +21,26 @@ HTTP_READ_TIMEOUT = 120
 
 # Codes where a failed POST does NOT prove the server did no work: a 500 or a
 # proxy 502/504 can arrive after the request was fully processed and committed.
+# A 503 usually comes from a proxy that never forwarded anything, but an
+# application 503 looks identical from here - and for this endpoint a wrong
+# retry costs a silently shadowed duplicate row, while a wrong give-up costs a
+# logged, countable gap. So it is treated as ambiguous too.
 # 408/429 are rejected before the controller runs, so they stay retryable even
 # for non-idempotent endpoints.
 HTTP_AMBIGUOUS_FAILURE_CODES = [500, 502, 503, 504]
+
+
+def _may_have_reached_server(exc, post_attempted: bool) -> bool:
+    """Could this failure have left work committed on the server?
+
+        Only relevant for non-idempotent endpoints, where repeating a POST is
+        safe exactly when the first one provably never arrived.
+    """
+    if not post_attempted:
+        # raised by _maybe_reauthenticate(), before anything was sent
+        return False
+    # the connection never came up, so no bytes left the client
+    return not isinstance(exc, requests.exceptions.ConnectTimeout)
 
 # Circuit breaker for persistent errors
 HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
@@ -660,8 +679,10 @@ class rest:
 
         for attempt in range(HTTP_MAX_RETRIES):
             attempts_made = attempt + 1
+            post_attempted = False
             try:
                 self._maybe_reauthenticate()
+                post_attempted = True
                 r = self.post(url, params=param, data=data)
 
                 if r.ok:
@@ -742,10 +763,10 @@ class rest:
 
             except Exception as e:
                 last_exception = e
-                if not allow_transient_retry:
+                if not allow_transient_retry and _may_have_reached_server(e, post_attempted):
                     _logger.warning(
                         f"POST [{url}] exception (attempt {attempt + 1}) - not retried, "
-                        f"endpoint is not idempotent: {str(e)}")
+                        f"endpoint is not idempotent and the request may have arrived: {str(e)}")
                     break
                 retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
 

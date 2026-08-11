@@ -128,6 +128,38 @@ class TestBitstreamPostNotRepeated(unittest.TestCase):
             self.assertGreater(r.forced_reauths, 0,
                                f"HTTP {code} must trigger re-authentication")
 
+    def test_connect_timeout_is_still_retried(self):
+        # The connection never came up, so no bytes left the client and the
+        # server cannot have committed anything - giving up here would lose the
+        # bitstream for nothing.
+        r = self._raising(requests.exceptions.ConnectTimeout("Connection timed out."))
+        r.put_bitstream({"internal_id": "abc"}, {"name": "big.zip"})
+
+        self.assertEqual(len(r.calls), _rest.HTTP_MAX_RETRIES,
+                         "a failed connect must keep its retries")
+
+    def test_auth_failure_before_the_post_is_still_retried(self):
+        # _maybe_reauthenticate() runs inside the same try, so a hiccup there
+        # used to abandon the bitstream without a single POST being attempted.
+        r = self._rest_instance()
+        reauths = []
+
+        def reauth(force=False):
+            reauths.append(force)
+            raise requests.exceptions.ConnectionError("auth endpoint down")
+
+        def post(command, params=None, data=None):
+            r.calls.append(command)
+            return _Resp(200)
+
+        r._maybe_reauthenticate = reauth
+        r.post = post
+        r.put_bitstream({"internal_id": "abc"}, {"name": "big.zip"})
+
+        self.assertEqual(r.calls, [], "the POST was never attempted")
+        self.assertEqual(len(reauths), _rest.HTTP_MAX_RETRIES,
+                         "a pre-POST failure must keep its retries")
+
     def test_other_endpoints_still_retry(self):
         r = self._raising(requests.exceptions.ReadTimeout("Read timed out."))
         list(r._iput("clarin/import/core/item", [{}], [{}]))
