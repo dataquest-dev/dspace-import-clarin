@@ -7,8 +7,7 @@ _logger = logging.getLogger("pump.userregistration")
 class userregistrations:
     validate_table = [
         # ["userregistration", {
-        #     # do not use compare because of email field (GDPR)
-        #     "compare": ["email", "netid"],
+        #     "compare": ["eperson_id"],
         # }],
     ]
 
@@ -46,15 +45,17 @@ class userregistrations:
         log_before_import(log_key, expected)
 
         for ur in progress_bar(self._ur):
-            data = {
-                'email': ur['email'],
-                'organization': ur['organization'],
-                'confirmation': ur['confirmation']
-            }
             e_id = ur['eperson_id']
-            e_id_by_email = epersons.by_email(ur['email'])
-            data['ePersonID'] = epersons.uuid(
-                e_id_by_email) if e_id_by_email is not None else None
+
+            if str(e_id) in self._id2uuid:
+                _logger.debug(f"Skipping already-imported eperson_id [{e_id}]")
+                continue
+
+            data = {
+                'organization': ur['organization'],
+                'confirmation': ur['confirmation'],
+                'ePersonID': epersons.uuid(e_id),
+            }
             try:
                 resp = dspace.put_userregistration(data)
                 self._id2uuid[str(e_id)] = resp['id']
