@@ -86,6 +86,19 @@ def load_env(file_str: str):
             os.environ[k.upper()] = v
     return True
 
+def apply_env_backend(env):
+    mapping = {
+        "DSPACE_ENDPOINT": ("backend", "endpoint"),
+        "DSPACE_USER": ("backend", "user"),
+        "DSPACE_PASSWORD": ("backend", "password"),
+    }
+
+    for env_key, (section, key) in mapping.items():
+        if env_key in os.environ:
+            env.setdefault(section, {})
+            env[section][key] = os.environ[env_key]
+
+    return env
 
 def init_logging(
     logger,

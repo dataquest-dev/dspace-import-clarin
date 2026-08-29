@@ -610,6 +610,9 @@ class rest:
                 # 200 OK - success!
                 if key is None:
                     return js
+                if key not in js:
+                    _logger.debug(f'GET [{url}] 200 OK but key [{key}] not in response (empty page?)')
+                    return None
                 return js[key]
 
             if re_auth and r.status_code == 401:
