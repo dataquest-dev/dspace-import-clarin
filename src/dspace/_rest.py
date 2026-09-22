@@ -476,6 +476,19 @@ class rest:
         _logger.debug(f"Importing [] using [{url}]")
         return self._fetch(url, self.get, None)
 
+    def fetch_item_by_handle(self, handle: str):
+        """
+            Resolve a handle, e.g. `123456789/1`, to the item json. `pid/find`
+            redirects to `core/items/<uuid>`, so a non item handle gives another
+            dso type back - None is returned for those.
+        """
+        url = 'pid/find'
+        _logger.debug(f"Fetching [{handle}] using [{url}]")
+        item = self._fetch(url, self.get, None, params={"id": f"hdl:{handle}"})
+        if item is None or item.get("type") != "item":
+            return None
+        return item
+
     def fetch_items(self, page_size: int = 100, limit=None):
         url = 'core/items'
         _logger.debug(f"Fetch [] using [{url}]")
