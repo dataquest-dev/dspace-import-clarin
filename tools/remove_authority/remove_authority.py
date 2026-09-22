@@ -158,7 +158,7 @@ if __name__ == '__main__':
             result = process(dspace_be, item_handle, args.field, args.dry_run)
         except Exception as e:
             # one broken connection must not throw away the rest of the run
-            _logger.critical(f"[{item_handle}]: {e}")
+            _logger.critical(f"[{item_handle}]: {e}", exc_info=True)
             result = "failed"
         counts[result] += 1
         if result == "failed":

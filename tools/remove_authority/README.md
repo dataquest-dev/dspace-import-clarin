@@ -4,7 +4,8 @@ Removes the authority (and its confidence) from a metadata field of the listed i
 Items are taken from a file of handles, one per line; the field defaults to
 `dc.contributor.author`. Every value is replaced by itself without the authority, one
 metadata PATCH per value, so the values keep their order and no other metadata field is
-rewritten.
+rewritten. Read *Before a production run* at the end first, there is one case the script
+cannot see.
 
 Dry run:
 ```

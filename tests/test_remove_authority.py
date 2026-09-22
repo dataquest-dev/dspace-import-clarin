@@ -88,13 +88,15 @@ class TestLoadHandles(unittest.TestCase):
             "# a comment", "", "  123456789/1  ",
             "https://hdl.handle.net/123456789/2",
             "http://hdl.handle.net/123456789/3",
+            "https://dspace.vsb.cz/handle/123456789/4",
         ])
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
                                          encoding="utf-8") as fout:
             fout.write(content)
         try:
-            self.assertEqual(["123456789/1", "123456789/2", "123456789/3"],
-                             tool.load_handles(fout.name))
+            self.assertEqual(
+                ["123456789/1", "123456789/2", "123456789/3", "123456789/4"],
+                tool.load_handles(fout.name))
         finally:
             os.unlink(fout.name)
 
