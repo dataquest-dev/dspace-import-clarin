@@ -4,105 +4,46 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from remove_authority_tool import load_tool  # noqa
-
-tool = load_tool()
-AUTHOR = "dc.contributor.author"
+from remove_authority_tool import AUTHOR, tool, value  # noqa
 
 
-def _value(value, authority=None, confidence=-1, place=0, language=None):
-    return {"value": value, "language": language, "authority": authority,
-            "confidence": confidence, "place": place}
+class TestAuthorityPatchOps(unittest.TestCase):
 
-
-class TestWithAuthority(unittest.TestCase):
-
-    def test_only_values_with_an_authority(self):
-        values = [
-            _value("Doe, John", "orcid-1", 600, 0),
-            _value("Roe, Jane", None, -1, 1),
-            _value("Poe, Ann", "", -1, 2),
-            _value("Loe, Max", "orcid-2", 500, 3),
-        ]
-        found = tool.with_authority(values)
-        self.assertEqual([0, 3], [i for i, _ in found])
-        self.assertEqual(["Doe, John", "Loe, Max"], [x["value"] for _, x in found])
-
-    def test_index_is_the_position_not_the_place(self):
-        # a migrated repository can have gaps in `place`, the patch path uses the position
-        values = [
-            _value("Doe, John", None, -1, 0),
-            _value("Roe, Jane", "orcid-1", 600, 5),
-            _value("Poe, Ann", "orcid-2", 600, 9),
-        ]
-        self.assertEqual([1, 2], [i for i, _ in tool.with_authority(values)])
-
-    def test_relationship_values_are_left_alone(self):
-        values = [_value("Virtual, V", "virtual::42", 600, 0),
-                  _value("Real, R", "orcid-1", 600, 1)]
-        self.assertEqual([1], [i for i, _ in tool.with_authority(values)])
-
-    def test_nothing_to_do(self):
-        self.assertEqual([], tool.with_authority([_value("Doe, John")]))
-
-
-class TestPatchAuthorityAway(unittest.TestCase):
-
-    class _client:
-        def __init__(self):
-            self.calls = []
-
-        def api_patch(self, url, operation, path, value):
-            self.calls.append((url, operation, path, value))
-            return None
-
-    class _backend:
-        def __init__(self, client):
-            self.client = client
-
-    def test_patch_keeps_the_value_and_drops_the_authority(self):
-        client = self._client()
-        tool.patch_authority_away(self._backend(client), "http://x/api/core/items/u",
-                                  AUTHOR, 3, _value("Doe, John", "orcid-1", 600, 3, "en"))
-        self.assertEqual(1, len(client.calls))
-        url, operation, path, value = client.calls[0]
-        self.assertEqual(("http://x/api/core/items/u", "replace",
-                          f"/metadata/{AUTHOR}/3"), (url, operation, path))
-        self.assertEqual({"value": "Doe, John", "language": "en",
-                          "authority": None, "confidence": -1}, value)
+    def test_one_replace_per_value_without_the_authority(self):
+        to_clear = [(0, value("Doe, John", "orcid-1", 600, 0, "en")),
+                    (3, value("Loe, Max", "orcid-2", 500, 3))]
+        self.assertEqual([
+            {"op": "replace", "path": f"/metadata/{AUTHOR}/0",
+             "value": {"value": "Doe, John", "language": "en",
+                       "authority": None, "confidence": -1}},
+            {"op": "replace", "path": f"/metadata/{AUTHOR}/3",
+             "value": {"value": "Loe, Max", "language": None,
+                       "authority": None, "confidence": -1}},
+        ], tool.authority_patch_ops(AUTHOR, to_clear))
 
 
 class TestVerify(unittest.TestCase):
 
-    def _item(self, values):
-        return {"metadata": {AUTHOR: values}}
-
-    def test_clean_item_passes(self):
-        tool.verify(AUTHOR, ["A", "B"],
-                    self._item([_value("A"), _value("B", "virtual::7", 600, 1)]))
-
     def test_a_changed_value_stops_the_run(self):
+        # a patch that lands on the wrong index can overwrite a value that had no
+        # authority, and then nothing but this check notices
         with self.assertRaises(tool.UnexpectedState):
-            tool.verify(AUTHOR, ["A", "B"], self._item([_value("A"), _value("C")]))
-
-    def test_a_surviving_authority_stops_the_run(self):
-        with self.assertRaises(tool.UnexpectedState):
-            tool.verify(AUTHOR, ["A"], self._item([_value("A", "orcid-1", 600)]))
+            tool.verify(AUTHOR, ["A", "B"],
+                        {"metadata": {AUTHOR: [value("A"), value("A", None, -1, 1)]}})
 
 
 class TestRun(unittest.TestCase):
 
     def _fake_process(self, results):
-        seen = []
+        self.seen = []
 
         def fake(dspace_be, handle, field, dry_run):
-            seen.append(handle)
+            self.seen.append(handle)
             outcome = results[handle]
             if isinstance(outcome, Exception):
                 raise outcome
             return outcome
 
-        self.seen = seen
         real = tool.process
         tool.process = fake
         self.addCleanup(setattr, tool, "process", real)
@@ -139,7 +80,7 @@ class TestLoadHandles(unittest.TestCase):
         self.addCleanup(os.unlink, fout.name)
         return fout.name
 
-    def test_comments_blanks_and_prefixes(self):
+    def test_comments_blanks_and_urls(self):
         path = self._write("\n".join([
             "# a comment", "", "  123456789/1  ",
             "https://hdl.handle.net/123456789/2",

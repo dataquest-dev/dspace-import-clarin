@@ -3,8 +3,8 @@
 Removes the authority, and the confidence that belongs to it, from every value of a
 metadata field that has one. Items are taken from a file of handles, one per line; the
 field defaults to `dc.contributor.author`. Each value is replaced by itself without the
-authority, one metadata PATCH per value, so the values keep their order and no other
-metadata field is rewritten.
+authority, all of an item's values in one metadata PATCH, so the values keep their order
+and no other metadata field is rewritten.
 
 **Run the SQL check in [Before a production run](#before-a-production-run) first.** There is
 one state of the database in which this tool overwrites an author name.
@@ -19,11 +19,6 @@ Update:
 ```
 set ENVFILE=.env-vsb
 python remove_authority.py --endpoint="https://dspace.vsb.cz/server/api/" --handles=./handles.txt
-```
-
-Another field:
-```
-python remove_authority.py --handles=./handles.txt --field=dc.contributor.editor
 ```
 
 `handles.txt` - handle urls are accepted too, empty lines and `#` comments are skipped:
@@ -60,9 +55,10 @@ SELECT mv.dspace_object_id, mv.place, count(*)
 ```
 
 Change `short_id`, `element` and `qualifier` to match `--field` when you use another one.
-Rows here have to be fixed in the database, this script cannot see them.
+Rows here have to be fixed in the database, this script cannot see them - and re-running
+it does not repair an item it has already hit.
 
-The tool cannot detect the collision up front, but it does check each item after patching
-it: the values must be unchanged and in the same order, and none may still carry an
-authority. When that check fails it **stops the whole run** instead of continuing, so at
-most one item is affected. Do not just re-run it - fix the places first.
+The collision cannot be detected up front, so instead the tool checks each item after
+patching it: the values must be unchanged and in the same order, and none may still carry
+an authority. When that check fails it **stops the whole run**, so at most one item is
+affected.

@@ -7,29 +7,21 @@ uncollapsed list.
 import json
 import os
 import re
-import socket
 import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from remove_authority_tool import load_tool  # noqa
-
-tool = load_tool()
+from remove_authority_tool import AUTHOR, tool, value  # noqa
 import dspace  # noqa
 
-AUTHOR = "dc.contributor.author"
 ITEMS = {}
 PATCHED = []
 BEHAVIOUR = {}
 SERVER = None
 BASE = None
-
-
-def value(val, authority=None, confidence=-1, place=0, language=None):
-    return {"value": val, "language": language, "authority": authority,
-            "confidence": confidence, "place": place}
 
 
 def add_item(handle, authors, extra=None):
@@ -46,22 +38,17 @@ def rest_view(metadata):
     """MetadataConverter: a TreeSet on `place`, the first value of a place wins."""
     view = {}
     for field, values in metadata.items():
-        seen, kept = set(), []
+        kept = {}
         for val in sorted(values, key=lambda x: x["place"]):
-            if val["place"] in seen:
-                continue
-            seen.add(val["place"])
-            kept.append(val)
-        view[field] = kept
+            kept.setdefault(val["place"], val)
+        view[field] = list(kept.values())
     return view
 
 
 def item_json(uuid):
     stored = ITEMS[uuid]
-    return {"id": uuid, "uuid": uuid, "name": "T", "handle": stored["handle"],
-            "metadata": rest_view(stored["metadata"]), "type": stored["type"],
-            "inArchive": True, "discoverable": True, "withdrawn": False,
-            "_links": {"self": {"href": f"{BASE}/core/items/{uuid}"}}}
+    return {"uuid": uuid, "handle": stored["handle"], "type": stored["type"],
+            "metadata": rest_view(stored["metadata"])}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -93,9 +80,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"authenticated": True})
             return
         if self.path.startswith("/server/api/pid/find"):
-            handle = self.path.split("id=", 1)[1].replace("hdl%3A", "hdl:")
-            handle = handle.replace("hdl:", "").replace("%2F", "/")
-            uuid = self._uuid_of(handle)
+            wanted = unquote(parse_qs(urlparse(self.path).query)["id"][0])
+            uuid = self._uuid_of(wanted.replace("hdl:", "", 1))
             if uuid is None:
                 self._send(404, {})
                 return
@@ -121,6 +107,7 @@ class Handler(BaseHTTPRequestHandler):
         uuid = match.group(1)
         ops = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         PATCHED.append((uuid, ops))
+
         how = BEHAVIOUR.get(uuid)
         if how == "refuse":
             self._send(422, {"message": "no metadata of this type at that index"})
@@ -129,14 +116,14 @@ class Handler(BaseHTTPRequestHandler):
             BEHAVIOUR.pop(uuid)
             self._send(401, {"message": "token expired"})
             return
+        if how == "ignore":
+            ops = []
+
         for op in ops:
             _, _, field, index = op["path"].split("/")
             # like DSpaceObjectMetadataReplaceOperation: alter the existing value,
             # indexing the uncollapsed list, `place` untouched
-            values = ITEMS[uuid]["metadata"][field]
-            if how == "ignore":
-                continue
-            values[int(index)].update({
+            ITEMS[uuid]["metadata"][field][int(index)].update({
                 "value": op["value"]["value"],
                 "language": op["value"].get("language"),
                 "authority": op["value"].get("authority"),
@@ -147,12 +134,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def setUpModule():
     global SERVER, BASE
-    free = socket.socket()
-    free.bind(("127.0.0.1", 0))
-    port = free.getsockname()[1]
-    free.close()
-    BASE = f"http://127.0.0.1:{port}/server/api"
-    SERVER = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    SERVER = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    BASE = f"http://127.0.0.1:{SERVER.server_address[1]}/server/api"
     threading.Thread(target=SERVER.serve_forever, daemon=True).start()
 
 
@@ -184,17 +167,29 @@ class TestHappyPath(RestTestCase):
         uuid = add_item("123456789/1", [
             value("Doe, John", "orcid-1", 600, 0),
             value("Roe, Jane", None, -1, 1),
-            value("Poe, Ann", "orcid-2", 500, 2),
+            value("Poe, Ann", "", -1, 2),                 # empty is not an authority
+            value("Loe, Max", "orcid-2", 500, 3),
+            value("Virtual, V", "virtual::42", 600, 4),   # stays, verify() allows it
         ], extra={"dc.subject": [value("kw", "vocab-1", 600)]})
 
         self.assertEqual("updated", self.run_tool("123456789/1"))
         self.assertEqual([("Doe, John", None, 0), ("Roe, Jane", None, 1),
-                          ("Poe, Ann", None, 2)], self.authors(uuid))
-        self.assertEqual([f"/metadata/{AUTHOR}/0", f"/metadata/{AUTHOR}/2"],
-                         [op["path"] for _, ops in PATCHED for op in ops])
+                          ("Poe, Ann", "", 2), ("Loe, Max", None, 3),
+                          ("Virtual, V", "virtual::42", 4)], self.authors(uuid))
+        self.assertEqual([("replace", f"/metadata/{AUTHOR}/0"),
+                          ("replace", f"/metadata/{AUTHOR}/3")],
+                         [(op["op"], op["path"]) for _, ops in PATCHED for op in ops])
         self.assertEqual("vocab-1",
                          ITEMS[uuid]["metadata"]["dc.subject"][0]["authority"])
         self.assertEqual("Title", ITEMS[uuid]["metadata"]["dc.title"][0]["value"])
+
+    def test_the_whole_item_takes_one_request(self):
+        add_item("123456789/1", [value("A, A", "orcid-1", 600, 0),
+                                 value("B, B", "orcid-2", 600, 1),
+                                 value("C, C", "orcid-3", 600, 2)])
+        self.assertEqual("updated", self.run_tool("123456789/1"))
+        self.assertEqual(1, len(PATCHED))
+        self.assertEqual(3, len(PATCHED[0][1]))
 
     def test_gapped_places_are_patched_by_position(self):
         uuid = add_item("123456789/1", [
@@ -228,7 +223,7 @@ class TestHappyPath(RestTestCase):
                          (edited["value"], edited["language"],
                           edited["authority"], edited["confidence"]))
 
-    def test_relationship_values_are_left_alone(self):
+    def test_an_item_of_nothing_but_relationship_values(self):
         uuid = add_item("123456789/1", [value("Virtual, V", "virtual::42", 600, 0)])
         self.assertEqual("skipped", self.run_tool("123456789/1"))
         self.assertEqual([], PATCHED)

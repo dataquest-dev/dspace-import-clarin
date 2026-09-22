@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import re
 import sys
 
 # Set up directories for imports
@@ -23,12 +24,13 @@ _logger = logging.getLogger()
 
 # env settings, update with project_settings
 env = update_settings(settings.env, project_settings.settings)
-init_logging(_logger, env["log_file"])
 
 # DSpace Choices.CF_UNSET - confidence of a value that has no authority
 CONFIDENCE_UNSET = -1
 # authority of a value that comes from a relationship, the server owns those
 VIRTUAL_PREFIX = "virtual::"
+# `https://hdl.handle.net/` or `https://dspace.x.cz/handle/` in front of a handle
+HANDLE_URL = re.compile(r"^https?://[^/]+/(handle/)?")
 
 
 class UnexpectedState(Exception):
@@ -37,12 +39,7 @@ class UnexpectedState(Exception):
 
 def strip_handle_prefix(handle: str) -> str:
     """Turn `https://dspace.x.cz/handle/123456789/1` into `123456789/1`."""
-    for prefix in env["dspace"]["handle_prefix"]:
-        if handle.startswith(prefix):
-            return handle[len(prefix):]
-    if "/handle/" in handle:
-        return handle.split("/handle/", 1)[1]
-    return handle
+    return HANDLE_URL.sub("", handle)
 
 
 def load_handles(file_path: str) -> list:
@@ -67,26 +64,22 @@ def with_authority(values: list) -> list:
     return [(i, x) for i, x in enumerate(values) if is_removable(x)]
 
 
-def patch_authority_away(dspace_be, item_url: str, field: str,
-                         index: int, meta_val: dict):
-    """Replace one metadata value by the same value without its authority."""
-    new_val = {
-        "value": meta_val["value"],
-        "language": meta_val.get("language"),
-        "authority": None,
-        "confidence": CONFIDENCE_UNSET,
-    }
-    path = f"/metadata/{field}/{index}"
-    r = dspace_be.client.api_patch(item_url, "replace", path, new_val)
-    if r is not None and r.status_code == 401:
-        _logger.info("Reauthorization during item updating")
-        dspace_be.client.authenticate()
-        r = dspace_be.client.api_patch(item_url, "replace", path, new_val)
-    return r
+def authority_patch_ops(field: str, to_clear: list) -> list:
+    """Put every value back as it is, only without its authority."""
+    return [{
+        "op": "replace",
+        "path": f"/metadata/{field}/{index}",
+        "value": {
+            "value": meta_val["value"],
+            "language": meta_val.get("language"),
+            "authority": None,
+            "confidence": CONFIDENCE_UNSET,
+        },
+    } for index, meta_val in to_clear]
 
 
 def verify(field: str, orig_values: list, updated_item: dict):
-    """Either check failing means the indexes did not point where we thought."""
+    """Raise UnexpectedState if the patches did not land where they were aimed."""
     new_values = updated_item.get("metadata", {}).get(field, [])
     if [x["value"] for x in new_values] != orig_values:
         raise UnexpectedState(f"[{field}] changed from {orig_values} "
@@ -122,20 +115,14 @@ def process(dspace_be, handle: str, field: str, dry_run: bool) -> str:
             f"[{handle}]: {len(to_clear)} authority value(s) of [{field}] - DRY-RUN")
         return "updated"
 
-    # patching by index does not reorder anything, the other values stay untouched
-    item_url = f"{dspace_be.endpoint}/core/items/{item['uuid']}"
+    # replacing by index does not reorder anything, the other values stay untouched
     orig_values = [x["value"] for x in values]
-    response, done = None, 0
-    for index, meta_val in to_clear:
-        response = patch_authority_away(dspace_be, item_url, field, index, meta_val)
-        if response is None or response.status_code != 200:
-            code = response.status_code if response is not None else None
-            _logger.critical(f"[{handle}]: cannot patch [{field}][{index}], status "
-                             f"[{code}], [{done}] value(s) already changed")
-            return "failed"
-        done += 1
+    updated = dspace_be.patch_metadata(item["uuid"], authority_patch_ops(field, to_clear))
+    if updated is None:
+        _logger.critical(f"[{handle}]: cannot patch [{field}], nothing was changed")
+        return "failed"
 
-    verify(field, orig_values, response.json())
+    verify(field, orig_values, updated)
     _logger.info(f"[{handle}]: removed {len(to_clear)} authority value(s) of [{field}]")
     return "updated"
 
@@ -144,7 +131,6 @@ def run(dspace_be, handles: list, field: str, dry_run: bool):
     """Go through the handles. Returns the counts and the handles that failed."""
     counts = {"updated": 0, "skipped": 0, "no field": 0, "failed": 0}
     failed = []
-    stop = False
 
     for handle in handles:
         try:
@@ -153,7 +139,9 @@ def run(dspace_be, handles: list, field: str, dry_run: bool):
             _logger.critical(f"[{handle}]: {e}")
             _logger.critical("Stopping, the remaining handles were not touched. See "
                              "'Before a production run' in the README of this tool.")
-            result, stop = "failed", True
+            counts["failed"] += 1
+            failed.append(handle)
+            break
         except Exception as e:
             # one broken connection must not throw away the rest of the run
             _logger.critical(f"[{handle}]: {e}", exc_info=True)
@@ -162,8 +150,6 @@ def run(dspace_be, handles: list, field: str, dry_run: bool):
         counts[result] += 1
         if result == "failed":
             failed.append(handle)
-        if stop:
-            break
 
     return counts, failed
 
@@ -173,10 +159,12 @@ def get_dspace_con(args):
     password = os.environ.get("DSPACE_PASSWORD", args.password)
     if "DSPACE_USER" in os.environ or "DSPACE_PASSWORD" in os.environ:
         _logger.info(f"Used environment variables: {user}")
-    return dspace.rest(args.endpoint.rstrip("/"), user, password, True)
+    return dspace.rest(args.endpoint, user, password, True)
 
 
 if __name__ == '__main__':
+    init_logging(_logger, env["log_file"])
+
     parser = argparse.ArgumentParser(
         description="Remove the authority of a metadata field for the listed items")
     parser.add_argument("--handles",
