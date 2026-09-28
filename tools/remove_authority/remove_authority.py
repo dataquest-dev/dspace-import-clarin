@@ -119,7 +119,7 @@ def process(dspace_be, handle: str, field: str, dry_run: bool) -> str:
     orig_values = [x["value"] for x in values]
     updated = dspace_be.patch_metadata(item["uuid"], authority_patch_ops(field, to_clear))
     if updated is None:
-        _logger.critical(f"[{handle}]: cannot patch [{field}], nothing was changed")
+        _logger.critical(f"[{handle}]: cannot patch [{field}], run this handle again")
         return "failed"
 
     verify(field, orig_values, updated)
