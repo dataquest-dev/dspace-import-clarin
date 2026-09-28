@@ -93,7 +93,7 @@ def process(dspace_be, handle: str, field: str, dry_run: bool) -> str:
     """Remove the authority from one item. Returns what happened to it."""
     item = dspace_be.fetch_item_by_handle(handle)
     if item is None:
-        _logger.critical(f"[{handle}]: item not found")
+        _logger.critical(f"[{handle}]: no item found, or the request failed")
         return "failed"
 
     values = item.get("metadata", {}).get(field, [])
