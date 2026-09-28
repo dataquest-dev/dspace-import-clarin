@@ -51,6 +51,7 @@ SELECT mv.dspace_object_id, mv.place, count(*)
   FROM metadatavalue mv JOIN metadatafieldregistry f ON f.metadata_field_id = mv.metadata_field_id
   JOIN metadataschemaregistry s ON s.metadata_schema_id = f.metadata_schema_id
  WHERE s.short_id='dc' AND f.element='contributor' AND f.qualifier='author'
+   AND mv.dspace_object_id IS NOT NULL
  GROUP BY 1,2 HAVING count(*) > 1;
 ```
 
