@@ -16,6 +16,7 @@ if LIB_DIR not in sys.path:
 def _load_rest():
     """Load src/dspace/_rest.py without importing the whole dspace package."""
     pkg_dir = os.path.join(ROOT_DIR, "src", "dspace")
+    before = dict(sys.modules)
     if "dspace" not in sys.modules:
         pkg = types.ModuleType("dspace")
         pkg.__path__ = [pkg_dir]
@@ -25,6 +26,12 @@ def _load_rest():
     module = importlib.util.module_from_spec(spec)
     sys.modules["dspace._rest"] = module
     spec.loader.exec_module(module)
+    # the stub must not outlive this call, another test may need the real package
+    for name in [x for x in list(sys.modules) if x.split(".")[0] == "dspace"]:
+        if name in before:
+            sys.modules[name] = before[name]
+        else:
+            del sys.modules[name]
     return module
 
 
