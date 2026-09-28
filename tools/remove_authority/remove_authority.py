@@ -29,7 +29,7 @@ env = update_settings(settings.env, project_settings.settings)
 CONFIDENCE_UNSET = -1
 # authority of a value that comes from a relationship, the server owns those
 VIRTUAL_PREFIX = "virtual::"
-# `https://hdl.handle.net/` or `https://dspace.x.cz/handle/` in front of a handle
+# `http(s)://hdl.handle.net/` or `http(s)://dspace.x.cz/handle/` in front of a handle
 HANDLE_URL = re.compile(r"^https?://[^/]+/(handle/)?")
 
 
