@@ -91,18 +91,18 @@ class date:
             return True
         except ValueError:
             pass
-        
+
         # Check YYYY-MM format (partial date)
         try:
             datetime.strptime(self._d, '%Y-%m')
             return True
         except ValueError:
             pass
-        
+
         # Check YYYY format (year only)
         if date.is_year_only(self._d):
             return True
-        
+
         date.invalid[self._d] += 1
         if date.invalid[self._d] == 1:
             _logger.debug(f"[{self._d}] is not valid date format (expected YYYY-MM-DD, YYYY-MM, or YYYY)")
@@ -122,7 +122,7 @@ class date:
             return True
 
         # Try full date formats (with day, month, and year)
-        full_date_formats = ['%Y/%m/%d', '%d/%m/%Y', '%Y.%m.%d', '%d.%m.%Y', 
+        full_date_formats = ['%Y/%m/%d', '%d/%m/%Y', '%Y.%m.%d', '%d.%m.%Y',
                              '%Y-%m-%d', '%d-%m-%Y', '%d. %m. %Y']
         for fmt in full_date_formats:
             try:
@@ -132,7 +132,7 @@ class date:
                 return True
             except ValueError:
                 continue
-        
+
         # Try partial date formats (year-month) - normalize to YYYY-MM
         partial_formats = ['%Y-%m', '%m-%Y', '%Y/%m', '%m/%Y', '%Y.%m', '%m.%Y']
         for fmt in partial_formats:
@@ -143,7 +143,7 @@ class date:
                 return True
             except ValueError:
                 continue
-        
+
         _logger.warning(f"Error converting [{self._d}] to date.")
         return False
 
@@ -222,7 +222,7 @@ class updater:
     def _perform_update(self, item: dict, date_val: date, uuid: str, id_str: str) -> int:
         """Common logic for updating item metadata in database."""
         item_mtd = item["metadata"]
-        
+
         # Log conversion
         date.invalid_but_converted[date_val.input] += 1
         if date.invalid_but_converted[date_val.input] == 1:
@@ -251,7 +251,7 @@ class updater:
         """
         uuid = item['uuid']
         id_str = f"Item [{uuid}]: [{self._to_mtd_field}]"
-        
+
         # No null/empty handling - let it crash if needed
         date_val = date(date_str)
         if not force:
@@ -388,18 +388,18 @@ if __name__ == '__main__':
     parser.add_argument("--result-every-N", type=int, default=10000)
     parser.add_argument("--only", type=str, default=None)
     args = parser.parse_args()
-    
+
     # Handle fix-date-format mode
     if args.fix_date_format:
         args.to_mtd_field = "dc.date.issued"
         args.from_mtd_field = ["dc.date.issued"]
         _logger.info("Fix date format mode enabled: correcting dc.date.issued")
-    
+
     # Validate required arguments for non-fix-date-format mode
     if not args.fix_date_format:
         if args.to_mtd_field is None or args.from_mtd_field is None:
             parser.error("--to_mtd_field and --from_mtd_field are required unless --fix-date-format is used")
-    
+
     # output args from parse_args but without passwords
     args_dict = vars(args).copy()
     args_dict.pop("password", None)
@@ -418,7 +418,7 @@ if __name__ == '__main__':
     # Initialize DSpace backend
     dspace_be = dspace.rest(endpoint, user, password, True)
 
-    upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field, 
+    upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field,
                   dry_run=args.dry_run)
 
     stats = additional_stats()
