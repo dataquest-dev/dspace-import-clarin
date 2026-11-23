@@ -21,6 +21,7 @@ Date rules (used by all modes):
 - Full dates are converted to `YYYY-MM-DD` (e.g. `30.5.2025` → `2025-05-30`, `2020-5-3` → `2020-05-03`)
 - Partial dates are converted to `YYYY-MM` (e.g. `5/2025` → `2025-05`)
 - Empty and unparseable values are not changed, they are reported as anomalies
+- `--fix-date-format` does not delete values: items with more `dc.date.issued` values are not changed, they are reported as anomalies
 
 ## TUL update dc.date.issued
 

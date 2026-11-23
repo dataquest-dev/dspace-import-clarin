@@ -103,6 +103,41 @@ class TestFixDateFormat(unittest.TestCase):
                     self.assertEqual(ret, _am.updater.ret_updated)
                     self.assertEqual(stored, expected)
 
+    def test_multiple_values_are_not_removed(self):
+        values = [{"value": "30.5.2025"}, {"value": "2020"}]
+        item = {"uuid": "u", "metadata": {"dc.date.issued": list(values)}}
+        # dspace_be=None and dry_run=False: any DSpace call would raise
+        upd = _am.updater(None, ["dc.date.issued"], "dc.date.issued", remove_extra_values=False)
+        self.assertEqual(upd.update(item), _am.updater.ret_invalid_meta)
+        self.assertEqual(item["metadata"]["dc.date.issued"], values)
+        self.assertEqual(len(upd.info["anomalies"]), 1)
+
+
+class TestSourceFields(unittest.TestCase):
+    """Normal mode: dc.date.issued is missing and is created from a source field (dry-run)."""
+
+    def _run(self, value):
+        item = {"uuid": "u", "metadata": {"dc.date.submitted": [{"value": value}]}}
+        upd = _am.updater(None, ["dc.date.submitted"], "dc.date.issued", dry_run=True)
+        return upd.update(item), upd.info
+
+    def test_empty_source_is_anomaly(self):
+        for value in (None, "", "   "):
+            with self.subTest(value=value):
+                ret, info = self._run(value)
+                self.assertEqual(ret, _am.updater.ret_empty_meta)
+                self.assertEqual(len(info["anomalies"]), 1)
+
+    def test_unparseable_source_is_anomaly(self):
+        ret, info = self._run("ca. 2020")
+        self.assertEqual(ret, _am.updater.ret_empty_meta)
+        self.assertEqual(info["anomalies"][0][1], "ca. 2020")
+
+    def test_valid_source_is_created(self):
+        ret, info = self._run("30.5.2025")
+        self.assertEqual(ret, _am.updater.ret_created)
+        self.assertEqual(info["anomalies"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

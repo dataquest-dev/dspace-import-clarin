@@ -169,11 +169,13 @@ class updater:
     ret_invalid_meta = 4
     ret_empty_meta = 4
 
-    def __init__(self, dspace_be, from_mtd_fields: list, to_mtd_field: list, dry_run: bool = False):
+    def __init__(self, dspace_be, from_mtd_fields: list, to_mtd_field: list, dry_run: bool = False,
+                 remove_extra_values: bool = True):
         self._dspace_be = dspace_be
         self._from_mtd_fields = from_mtd_fields
         self._to_mtd_field = to_mtd_field
         self._dry_run = dry_run
+        self._remove_extra_values = remove_extra_values
         self._info = {
             "valid": [],
             "valid_year_only": [],
@@ -209,11 +211,17 @@ class updater:
                 _logger.warning(f"{id_str}: more than one value {meta_key}")
 
             # If there is more than one value, get only the first one
-            meta_val = date(meta_key[0]["value"])
+            value = meta_key[0]["value"]
+            if value is None or value.strip() == "":
+                _logger.error(f"{id_str}: empty value [{value}] - ANOMALY")
+                self._info["anomalies"].append((uuid, value, f"Empty value in {from_mtd}"))
+                continue
+            meta_val = date(value)
             # Convert date if necessary
             if not meta_val.is_valid_hybrid():
                 if not meta_val.parse_hybrid():
                     self._info["invalid_date_all"].add(meta_val.input)
+                    self._info["anomalies"].append((uuid, meta_val.input, f"Cannot parse {from_mtd}"))
                     continue
             return meta_val, id_str
 
@@ -312,6 +320,11 @@ class updater:
             if len(date_meta) != 1:
                 _logger.critical(f"{uuid}: other than one value {date_meta}")
                 self._info["multiple"].add(uuid)
+                # Format-only runs must not delete values, leave the item for manual review
+                if not self._remove_extra_values:
+                    values = [x["value"] for x in date_meta]
+                    self._info["anomalies"].append((uuid, values, "Multiple values"))
+                    return updater.ret_invalid_meta
                 if not self._dry_run:
                     val = ''
                     for i in range(len(date_meta)):
@@ -423,7 +436,7 @@ if __name__ == '__main__':
     dspace_be = dspace.rest(endpoint, user, password, True)
 
     upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field,
-                  dry_run=args.dry_run)
+                  dry_run=args.dry_run, remove_extra_values=not args.fix_date_format)
 
     stats = additional_stats()
 
