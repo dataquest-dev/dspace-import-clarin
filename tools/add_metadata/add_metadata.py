@@ -85,17 +85,17 @@ class date:
 
     def is_valid_hybrid(self):
         """Check if date is valid in YYYY-MM-DD, YYYY-MM, or YYYY format (all kept as-is)."""
-        # Check YYYY-MM-DD format
+        # Check YYYY-MM-DD format (strptime also accepts '2020-5-3', so require zero padding)
         try:
-            datetime.strptime(self._d, '%Y-%m-%d')
-            return True
+            if datetime.strptime(self._d, '%Y-%m-%d').strftime('%Y-%m-%d') == self._d:
+                return True
         except ValueError:
             pass
 
         # Check YYYY-MM format (partial date)
         try:
-            datetime.strptime(self._d, '%Y-%m')
-            return True
+            if datetime.strptime(self._d, '%Y-%m').strftime('%Y-%m') == self._d:
+                return True
         except ValueError:
             pass
 
@@ -244,7 +244,7 @@ class updater:
 
     def update_existing_metadata(self, item: dict, date_str: str, force: bool = False) -> int:
         """Update existing metadata with hybrid rules:
-        - No null/empty handling (will crash on None)
+        - Null/empty values kept untouched, logged as ANOMALY
         - YYYY formats kept as-is
         - Partial dates (YYYY-MM) kept as-is (normalized)
         - Invalid dates logged as ANOMALY
@@ -252,7 +252,12 @@ class updater:
         uuid = item['uuid']
         id_str = f"Item [{uuid}]: [{self._to_mtd_field}]"
 
-        # No null/empty handling - let it crash if needed
+        if date_str is None or date_str.strip() == "":
+            _logger.error(f"{id_str}: empty value [{date_str}] - ANOMALY")
+            self._info["invalid_date"].append((uuid, date_str))
+            self._info["anomalies"].append((uuid, date_str, "Empty value"))
+            return updater.ret_invalid_meta
+
         date_val = date(date_str)
         if not force:
             if date_val.is_valid_hybrid():
@@ -337,7 +342,6 @@ class updater:
                         f"Forced metadata change but no value found for [{uuid}]")
                     return updater.ret_empty_meta
 
-            # Always use standard validation/parsing (no relaxed mode)
             return self.update_existing_metadata(item, val, force=force)
         else:
             return self.add_new_metadata(item)
