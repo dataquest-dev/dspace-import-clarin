@@ -23,6 +23,7 @@ Date rules (used by all modes):
 - Empty and unparseable values are not changed, they are reported as anomalies
 - `--fix-date-format` does not delete values: items with more `dc.date.issued` values are not changed, they are reported as anomalies
 - The normal mode removes extra `dc.date.issued` values, except when one of them is empty: such items are not changed, they are reported as anomalies
+- In the normal mode, empty or unparseable source fields are reported as anomalies only if no source field gives a value. Every unparseable source value is listed in `invalid_date_all`
 
 ## TUL update dc.date.issued
 
