@@ -201,10 +201,12 @@ class updater:
     def find_correct_metadata(self, item: dict):
         uuid = item['uuid']
         item_mtd = item["metadata"]
+        # Reported only if no source field gives a value
+        anomalies = []
 
         for from_mtd in self._from_mtd_fields:
             meta_key = item_mtd.get(from_mtd, None)
-            if meta_key is None:
+            if not meta_key:
                 continue
             id_str = f"Item [{uuid}]: [{from_mtd}]"
             if len(meta_key) != 1:
@@ -213,18 +215,19 @@ class updater:
             # If there is more than one value, get only the first one
             value = meta_key[0]["value"]
             if value is None or value.strip() == "":
-                _logger.error(f"{id_str}: empty value [{value}] - ANOMALY")
-                self._info["anomalies"].append((uuid, value, f"Empty value in {from_mtd}"))
+                _logger.warning(f"{id_str}: empty value [{value}]")
+                anomalies.append((uuid, value, f"Empty value in {from_mtd}"))
                 continue
             meta_val = date(value)
             # Convert date if necessary
             if not meta_val.is_valid_hybrid():
                 if not meta_val.parse_hybrid():
                     self._info["invalid_date_all"].add(meta_val.input)
-                    self._info["anomalies"].append((uuid, meta_val.input, f"Cannot parse {from_mtd}"))
+                    anomalies.append((uuid, meta_val.input, f"Cannot parse {from_mtd}"))
                     continue
             return meta_val, id_str
 
+        self._info["anomalies"].extend(anomalies)
         return None, None
 
     def _perform_update(self, item: dict, date_val: date, uuid: str, id_str: str) -> int:
@@ -315,15 +318,19 @@ class updater:
 
         # Check if the target metadata field exists and is not empty
         date_meta = item_mtd.get(self._to_mtd_field, None)
-        if date_meta is not None:
+        if date_meta:
             val = date_meta[0]["value"]
             if len(date_meta) != 1:
                 _logger.critical(f"{uuid}: other than one value {date_meta}")
                 self._info["multiple"].add(uuid)
+                values = [x["value"] for x in date_meta]
                 # Format-only runs must not delete values, leave the item for manual review
                 if not self._remove_extra_values:
-                    values = [x["value"] for x in date_meta]
                     self._info["anomalies"].append((uuid, values, "Multiple values"))
+                    return updater.ret_invalid_meta
+                # The cleanup below cannot handle null/blank values, do not touch such items
+                if any(v is None or v.strip() == "" for v in values):
+                    self._info["anomalies"].append((uuid, values, "Multiple values with an empty value"))
                     return updater.ret_invalid_meta
                 if not self._dry_run:
                     val = ''

@@ -22,6 +22,7 @@ Date rules (used by all modes):
 - Partial dates are converted to `YYYY-MM` (e.g. `5/2025` → `2025-05`)
 - Empty and unparseable values are not changed, they are reported as anomalies
 - `--fix-date-format` does not delete values: items with more `dc.date.issued` values are not changed, they are reported as anomalies
+- The normal mode removes extra `dc.date.issued` values, except when one of them is empty: such items are not changed, they are reported as anomalies
 
 ## TUL update dc.date.issued
 

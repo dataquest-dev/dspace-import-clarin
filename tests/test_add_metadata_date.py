@@ -138,6 +138,38 @@ class TestSourceFields(unittest.TestCase):
         self.assertEqual(ret, _am.updater.ret_created)
         self.assertEqual(info["anomalies"], [])
 
+    def test_empty_lists_do_not_crash(self):
+        upd = _am.updater(None, ["dc.date.submitted"], "dc.date.issued", dry_run=True)
+        item = {"uuid": "u", "metadata": {"dc.date.issued": [], "dc.date.submitted": []}}
+        self.assertEqual(upd.update(item), _am.updater.ret_empty_meta)
+
+    def test_later_source_wins_without_anomaly(self):
+        item = {"uuid": "u", "metadata": {"dc.date.submitted": [{"value": "ca. 2020"}],
+                                          "dc.date.defense": [{"value": "30.5.2025"}]}}
+        upd = _am.updater(None, ["dc.date.submitted", "dc.date.defense"], "dc.date.issued", dry_run=True)
+        self.assertEqual(upd.update(item), _am.updater.ret_created)
+        self.assertEqual(upd.info["anomalies"], [])
+
+
+class TestMultipleValuesCleanup(unittest.TestCase):
+    """Normal mode, real run: the cleanup of extra values must not crash on null values."""
+
+    def test_null_value_is_anomaly_and_nothing_removed(self):
+        removed = []
+        client = types.SimpleNamespace(remove_metadata=lambda item, field, i: removed.append(i))
+        be = types.SimpleNamespace(client=client, get=None, _fetch=lambda *a: None)
+        saved = getattr(_am, "dspace_be", None)
+        _am.dspace_be = be
+        try:
+            for values in ([None, "2020"], ["abc", None, "2020"], ["2020", " "]):
+                with self.subTest(values=values):
+                    item = {"uuid": "u", "metadata": {"dc.date.issued": [{"value": v} for v in values]}}
+                    ret = _am.updater(be, ["dc.date.issued"], "dc.date.issued").update(item)
+                    self.assertEqual(ret, _am.updater.ret_invalid_meta)
+                    self.assertEqual(removed, [])
+        finally:
+            _am.dspace_be = saved
+
 
 if __name__ == "__main__":
     unittest.main()
