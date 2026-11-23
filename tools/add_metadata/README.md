@@ -16,6 +16,12 @@ set ENVFILE=.env-tul
 python add_metadata.py --fix-date-format --endpoint="https://dspace.tul.cz/server/api/" --dry-run
 ```
 
+Date rules (used by all modes):
+- `YYYY-MM-DD`, `YYYY-MM` and `YYYY` are kept as-is (e.g. `2020` stays `2020`)
+- Full dates are converted to `YYYY-MM-DD` (e.g. `30.5.2025` → `2025-05-30`, `2020-5-3` → `2020-05-03`)
+- Partial dates are converted to `YYYY-MM` (e.g. `5/2025` → `2025-05`)
+- Empty and unparseable values are not changed, they are reported as anomalies
+
 ## TUL update dc.date.issued
 
 ```
