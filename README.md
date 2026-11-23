@@ -1,21 +1,21 @@
 [![Test dspace on dev-5](https://github.com/dataquest-dev/dspace-blackbox-testing/actions/workflows/test.yml/badge.svg)](https://github.com/dataquest-dev/dspace-blackbox-testing/actions/workflows/test.yml)
 
-# Dspace-python-api
-used for blackbox testing, data-ingestion procedures
+# DSpace-python-api
+Used for blackbox testing and data-ingestion procedures.
 
 # How to migrate CLARIN-DSpace5.* to CLARIN-DSpace7.*
 
 ### Important:
 Make sure that your email server is NOT running because some of the endpoints that are used
-are sending emails to the input email addresses. 
+send emails to the input email addresses. 
 For example, when using the endpoint for creating new registration data, 
-there exists automatic function that sends email, what we don't want
+an automatic function exists that sends emails, which we don't want
 because we use this endpoint for importing existing data.
 
 ### Prerequisites:
 1. **Python 3.8+** (tested with 3.8.10 and 3.11)
 
-2. Install CLARIN-DSpace7.*. (postgres, solr, dspace backend)
+2. Install CLARIN-DSpace7.*. (PostgreSQL, Solr, DSpace backend)
    2.1. Clone python-api: https://github.com/ufal/dspace-python-api (branch `main`)
    2.2. Clone submodules: `git submodule update --init libs/dspace-rest-python/`
 
@@ -47,8 +47,8 @@ aca.png  by.png  gplv2.png  mit.png    ...
 
 7. Create `dspace` database with extension `pgcrypto`.
 
-8. Go to the `dspace/bin` in dspace7 installation and run the command `dspace database migrate force` (force because of local types).
-**NOTE:** `dspace database migrate force` creates default database data that may be not in database dump, so after migration, some tables may have more data than the database dump. Data from database dump that already exists in database is not migrated.
+8. Go to the `dspace/bin` in DSpace 7 installation and run the command `dspace database migrate force` (force because of local types).
+**NOTE:** `dspace database migrate force` creates default database data that may not be in the database dump, so after migration, some tables may have more data than the database dump. Data from the database dump that already exists in the database is not migrated.
 
 9. Create an admin by running the command `dspace create-administrator` in the `dspace/bin`
 
@@ -57,6 +57,36 @@ Run `scripts/start.local.dspace.db.bat` or use `scripts/init.dspacedb5.sh` direc
 
 ***
 11. Update `project_settings.py`
+
+## Configuration Options
+
+### Backend Settings
+Configure importer runtime behavior in the `"backend"` section of `project_settings.py`:
+
+- **Testing mode behavior**: `"testing"`
+  - When `"testing": True`, importer uses fallback test bitstream metadata when the source bitstream file is missing.
+  - If repeated `put_bitstream` failures occur, importer logs a warning that includes fallback path/existence diagnostics.
+
+### Ignore Settings
+Configure items to skip during migration in the `"ignore"` section of `project_settings.py`:
+
+- **Missing license icons**: Add license labels to `"missing-icons"` array to ignore missing icon files during license import
+  ```python
+  "missing-icons": ["Inf", "OSI", "ND"]
+  ```
+
+- **Empty persons**: Add person IDs to `"epersons"` array to ignore empty/invalid person records
+  ```python  
+  "epersons": [
+      # ignore - empty person
+      198
+  ]
+  ```
+
+- **Metadata fields**: Add field names to `"fields"` array to ignore specific metadata fields during import
+  ```python
+  "fields": ['local.bitstream.file', 'local.bitstream.redirectToURL']
+  ```
 
 12. Make sure that handle prefixes are configured in the backend configuration (`dspace.cfg`):
    - Set your main handle prefix in `handle.prefix`
@@ -95,10 +125,25 @@ Add the following to your `project_settings.py`:
 - **NOTE:** database must be up to date (`dspace database migrate force` must be called in the `dspace/bin`)
 - **NOTE:** dspace server must be running
 
-## !!!Migration notes:!!!
-- The values of table attributes that describe the last modification time of dspace object (for example attribute `last_modified` in table `Item`) have a value that represents the time when that object was migrated and not the value from migrated database dump.
+## Database Connection Improvements
+
+For long-running imports, the system includes automatic connection management:
+
+- **Connection reliability**: TCP keepalive prevents timeouts, automatic reconnection on failures
+- **Large dataset handling**: Tables >100k rows processed in 50k row chunks to prevent memory issues  
+- **Retry logic**: All operations retry up to 3 times with exponential backoff
+
+### Configuration
+
+Database settings in `src/pump/_db_config.py`:
+- `DB_CHUNK_SIZE = 50000` - Rows per chunk for large tables
+- `DB_MAX_RETRIES = 3` - Retry attempts on failure
+- `DB_CONNECT_TIMEOUT = 30` - Connection timeout in seconds
+
+## !!!Migration Notes:!!!
+- The values of table attributes that describe the last modification time of DSpace objects (for example attribute `last_modified` in table `Item`) have a value that represents the time when that object was migrated and not the value from the migrated database dump.
 - If you don't have valid and complete data, not all data will be imported.
-- Check if license link contains XXX. This is of course unsuitable for production run!
+- Check if license link contains XXX. This is of course unsuitable for production runs!
 
 ## Check import consistency
 
@@ -148,3 +193,6 @@ When the `--test` option is specified with table names:
 2. This simulates empty tables during the import process
 3. The migration logic is tested without requiring actual data
 4. The test JSON filename can be customized in `project_settings.py` under `"input"["test_json_filename"]`
+
+#### NOTE
+Deleted bitstreams are not imported in this configuration; this can be modified via the backend.testing property in project_settings.py.

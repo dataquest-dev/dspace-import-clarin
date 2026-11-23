@@ -1,7 +1,23 @@
 import logging
-from ._utils import read_json, serialize, deserialize, time_method, progress_bar, log_before_import, log_after_import
+import threading
+from datetime import datetime
+from ._utils import read_json, serialize, deserialize, time_method, progress_bar, log_before_import, log_after_import, run_tasks
 
 _logger = logging.getLogger("pump.item")
+
+# Format (strptime format, suffix to append, description)
+DATE_FORMATS = [
+    ('%Y-%m-%d', None, 'YYYY-MM-DD'),     # 2024-01-15
+    ('%Y-%m-%dT%H:%M:%SZ', None, 'YYYY-MM-DDTHH:MM:SSZ'),  # 2022-08-21T10:00:11Z
+    ('%Y-%m-%dT%H:%M:%S.%fZ', None, 'YYYY-MM-DDTHH:MM:SS.sssZ'),  # 2022-08-21T10:00:11.123Z
+    ('%Y-%m-%dT%H:%M:%S%z', None, 'YYYY-MM-DDTHH:MM:SS±HHMM'),  # 2022-08-21T10:00:11+0000
+    # 2022-08-21T10:00:11.123+0000
+    ('%Y-%m-%dT%H:%M:%S.%f%z', None, 'YYYY-MM-DDTHH:MM:SS.sss±HHMM'),
+    ('%Y-%m', '-01', 'YYYY-MM'),          # 2024-01 → 2024-01-01
+    ('%Y', '-01-01', 'YYYY'),             # 2024 → 2024-01-01
+    ('%d %b. %Y', None, 'DD MMM. YYYY'),  # 15 Jan. 2024
+    ('%d %b %Y', None, 'DD MMM YYYY'),    # 15 Jan 2024
+]
 
 
 class items:
@@ -50,6 +66,21 @@ class items:
             "name": "item_hasMetadata",
             "left": ["sql", "db7", "one", "SELECT count(*) FROM metadatavalue where metadata_field_id in "
                                           "(select metadata_field_id from metadatafieldregistry where element = 'hasMetadata')"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item_notnull_in_archive",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item WHERE in_archive IS NULL"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item_notnull_withdrawn",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item WHERE withdrawn IS NULL"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item2bundle_notnull_bundle_id",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item2bundle WHERE bundle_id IS NULL"],
             "right": ["val", 0]
         }
     ]
@@ -131,11 +162,15 @@ class items:
     def imported(self):
         return self._imported['items']
 
+    @property
+    def done(self):
+        return self._done
+
     def item(self, item_id: int):
         return self._id2item[str(item_id)]
 
     @time_method
-    def import_to(self, cache_file, dspace, handles, metadatas, epersons, collections):
+    def import_to(self, cache_file, dspace, handles, metadatas, epersons, collections, item_workers: int = 1):
         """
             Import data into database.
             Mapped tables: item, collection2item, workspaceitem, cwf_workflowitem,
@@ -160,7 +195,8 @@ class items:
         if "item" in self._done:
             _logger.info("Skipping item import")
         else:
-            self._item_import_to(dspace, handles, metadatas, epersons, collections)
+            self._item_import_to(dspace, handles, metadatas,
+                                 epersons, collections, item_workers)
             self._done.append("item")
             self.serialize(cache_file)
 
@@ -270,7 +306,7 @@ class items:
 
         log_after_import(log_key, expected, self.imported_wf)
 
-    def _item_import_to(self, dspace, handles, metadatas, epersons, collections):
+    def _item_import_to(self, dspace, handles, metadatas, epersons, collections, item_workers: int = 1):
         expected = len(self._items or {})
         log_key = "items"
         log_before_import(log_key, expected)
@@ -279,6 +315,7 @@ class items:
 
         ws_items = 0
         wf_items = 0
+        to_import = []
 
         # create other items
         for item in progress_bar(self._items):
@@ -327,12 +364,46 @@ class items:
                     f"Item without collection [{i_id}] cannot be imported here")
                 continue
 
-            try:
-                resp = dspace.put_item(params, data)
-                self._id2uuid[str(i_id)] = resp['id']
-                self._imported["items"] += 1
-            except Exception as e:
-                _logger.error(f'put_item: [{i_id}] failed [{str(e)}]')
+            to_import.append((i_id, params, data))
+
+        workers = max(1, int(item_workers or 1))
+        _logger.info(
+            f"Prepared [{len(to_import)}] items for API import with workers:[{workers}]")
+
+        if workers > 1 and len(to_import) > 1:
+            _logger.info(f"Parallel item import enabled with workers:[{workers}]")
+
+        local = threading.local()
+
+        def worker(task):
+            i_id, params, data = task
+            if workers == 1:
+                return dspace.put_item(params, data)
+
+            client = getattr(local, "dspace", None)
+            if client is None:
+                local.dspace = dspace.spawn_worker_client()
+                client = local.dspace
+            return client.put_item(params, data)
+
+        for task, resp, err in run_tasks(
+            to_import,
+            worker,
+            workers=workers,
+            desc=f"Importing items ({workers} workers)",
+        ):
+            i_id, _params, _data = task
+            if err is not None:
+                _logger.error(f'put_item: [{i_id}] failed [{str(err)}]')
+                continue
+
+            if resp is None:
+                _logger.error(
+                    f'put_item: [{i_id}] failed - server returned None (detailed error logged above by REST client)')
+                continue
+
+            self._id2uuid[str(i_id)] = resp['id']
+            self._imported["items"] += 1
 
         log_after_import(f'{log_key} no owning col:[{without_col}], ws items:[{ws_items}] wf items:[{wf_items}]',
                          expected, self.imported + without_col + ws_items + wf_items)
@@ -409,6 +480,61 @@ class items:
         self._versions = data["versions"]
         self._migrated_versions = data.get("migrated_versions", [])
 
+    def iter_protocol_variants(self, handle: str):
+        """Yield alternative protocol variants of a handle (http <-> https)."""
+        if handle.startswith("https://"):
+            yield handle.replace("https://", "http://", 1)
+        elif handle.startswith("http://"):
+            yield handle.replace("http://", "https://", 1)
+
+    def _normalize_version_date(self, version_date_issued: str, item_uuid: str):
+        """
+        Normalize and validate version date string to YYYY-MM-DD format.
+        Returns normalized date in YYYY-MM-DD format if valid or None if invalid (error is logged)
+        """
+        for date_format, suffix, format_desc in DATE_FORMATS:
+            try:
+                # Parse and validate the date using strptime
+                parsed_date = datetime.strptime(version_date_issued, date_format)
+
+                # Check year is in reasonable range (1000-9999)
+                if not (1000 <= parsed_date.year <= 9999):
+                    _logger.error(
+                        f"Invalid year for item UUID {item_uuid}: '{version_date_issued}'. "
+                        "Year must be between 1000 and 9999. Skipping version import."
+                    )
+                    return None
+
+                # Convert to YYYY-MM-DD format
+                if suffix:
+                    # For incomplete dates (YYYY or YYYY-MM), append the suffix
+                    normalized_date = version_date_issued + suffix
+                    _logger.info(
+                        f"Date for item UUID {item_uuid} was '{version_date_issued}' ({format_desc}). "
+                        f"Normalized to {normalized_date}."
+                    )
+                else:
+                    # Convert parsed date to YYYY-MM-DD format
+                    normalized_date = parsed_date.strftime('%Y-%m-%d')
+                    if normalized_date != version_date_issued:
+                        _logger.info(
+                            f"Date for item UUID {item_uuid} was '{version_date_issued}' ({format_desc}). "
+                            f"Normalized to {normalized_date}."
+                        )
+
+                return normalized_date
+
+            except ValueError:
+                continue
+
+        # No format matched
+        format_list = ', '.join([desc for _, _, desc in DATE_FORMATS])
+        _logger.error(
+            f"Invalid date format for item UUID {item_uuid}: '{version_date_issued}'. "
+            f"Expected one of: {format_list}. Skipping version import."
+        )
+        return None
+
     def _migrate_versions(self, env, db7, db5_dspace, metadatas):
         _logger.info(
             f"Migrating versions [{len(self._id2item or {})}], "
@@ -442,7 +568,7 @@ class items:
 
             _logger.debug(f'Processing all versions for the item with ID: {item_id}')
 
-            # All versions of this Item is going to be processed
+            # All versions of this Item are going to be processed
             # Insert data into `versionhistory` table
             versionhistory_new_id = db7.get_last_id(
                 'versionhistory', 'versionhistory_id') + 1
@@ -457,6 +583,15 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
             for index, i_handle in enumerate(versions, 1):
                 # Get the handle of the x.th version of the Item
                 i_handle_d = metadatas.versions.get(i_handle, None)
+
+                # If handle not found, try with different protocol (http vs https)
+                if i_handle_d is None:
+                    for alternative_handle in self.iter_protocol_variants(i_handle):
+                        i_handle_d = metadatas.versions.get(alternative_handle, None)
+                        if i_handle_d is not None:
+                            _logger.debug(
+                                f"Found handle data using alternative protocol: {alternative_handle}")
+                            break
 
                 # If the item is withdrawn the new version could be stored in our repo or in another. Do import that version
                 # only if the item is stored in our repo.
@@ -495,36 +630,26 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                         qualifier = field_parts[2] if len(field_parts) > 2 else None
 
                         # Single query that handles both qualified and unqualified fields
-                        qualifier_condition = f"and qualifier = '{qualifier}'" if qualifier else "and qualifier IS NULL"
+                        qualifier_condition = f"AND qualifier = '{qualifier}'" if qualifier else "AND qualifier IS NULL"
 
-                        query = """
+                        query = f"""
                                 SELECT text_value
                                 FROM metadatavalue
-                                WHERE dspace_object_id = %s
+                                WHERE dspace_object_id = '{item_uuid}'
                                   AND metadata_field_id IN (
                                     SELECT metadata_field_id
                                     FROM metadatafieldregistry
                                     WHERE metadata_schema_id = (
                                       SELECT metadata_schema_id
                                       FROM metadataschemaregistry
-                                      WHERE short_id = %s
+                                      WHERE short_id = '{short_id}'
                                     )
-                                    AND element = %s
+                                    AND element = '{element}'
                                     {qualifier_condition}
                                   );
-                            """.format(qualifier_condition=qualifier_condition)
-                        params = [item_uuid, short_id, element]
-                        if qualifier:
-                            params.append(qualifier)
-                        placeholder_count = query.count("%s")
-                        if placeholder_count != len(params):
-                            _logger.error(
-                                "Placeholder/param mismatch: %d placeholders vs %d params. Query:\n%s\nParams:%s",
-                                placeholder_count, len(params), query, params
-                            )
-                            raise RuntimeError("SQL placeholder/parameter mismatch")
+                            """
 
-                        version_date_issued = db7.fetch_one(query, tuple(params))
+                        version_date_issued = db7.fetch_one(query)
                     else:
                         _logger.critical(f"Invalid date field format: '{date_field}'.")
                         continue
@@ -540,12 +665,33 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                         f"No version date found for item UUID {item_uuid} in any of the configured fields: {date_fields_to_try}. Skipping version import for this item.")
                     continue
 
-                version_date_sql = f"TO_TIMESTAMP('{version_date_issued}', 'YYYY-MM-DD')"
+                # Strip whitespace that might be present in database fields
+                version_date_issued = version_date_issued.strip()
 
-                db7.exe_sql(f"INSERT INTO public.versionitem(versionitem_id, version_number, version_date, "
-                            f"version_summary, versionhistory_id, eperson_id, item_id) VALUES "
-                            f"({versionitem_new_id}, {index}, {version_date_sql}, "
-                            f"'', {versionhistory_new_id}, '{admin_uuid}', '{item_uuid}');")
+                # Normalize and validate the date
+                normalized_date = self._normalize_version_date(
+                    version_date_issued, item_uuid)
+                if normalized_date is None:
+                    continue  # Error already logged in _normalize_version_date
+
+                # Use parameterized query to prevent SQL injection (primary security measure),
+                # regardless of input validation. normalized_date is also validated by datetime.strptime().
+                sql = """INSERT INTO public.versionitem(versionitem_id, version_number, version_date,
+                                                 version_summary, versionhistory_id, eperson_id, item_id) VALUES 
+                                                 (%(versionitem_id)s, %(version_number)s, TO_TIMESTAMP(%(version_date)s, 'YYYY-MM-DD'), 
+                                                 %(version_summary)s, %(versionhistory_id)s, %(eperson_id)s, %(item_id)s)"""
+
+                params = {
+                    'versionitem_id': versionitem_new_id,
+                    'version_number': index,
+                    'version_date': normalized_date,
+                    'version_summary': '',
+                    'versionhistory_id': versionhistory_new_id,
+                    'eperson_id': admin_uuid,
+                    'item_id': item_uuid
+                }
+
+                db7.exe_sql(sql, params)
                 # Update sequence
                 db7.exe_sql(f"SELECT setval('versionitem_seq', {versionitem_new_id})")
                 versionitem_new_id += 1
@@ -557,7 +703,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
     def raw_after_import(self, env, db7, db5_dspace, metadatas):
         # Migration process
         self._migrate_versions(env, db7, db5_dspace, metadatas)
-        self._check_sum(db7, db5_dspace, metadatas)
+        self._check_sum(env, db7, db5_dspace, metadatas)
 
     def get_newer_versions(self, item_id: int, metadatas):
         return self._get_versions(item_id, metadatas, metadatas.V5_DC_RELATION_ISREPLACEDBY_ID)
@@ -593,7 +739,15 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
             visited.add(cur_item_version)
             versions.append(cur_item_version)
 
-            if cur_item_version not in metadatas.versions:
+            # Check if handle exists in versions, try both http and https protocols
+            handle_data = metadatas.versions.get(cur_item_version, None)
+            if handle_data is None:
+                for alternative_handle in self.iter_protocol_variants(cur_item_version):
+                    handle_data = metadatas.versions.get(alternative_handle, None)
+                    if handle_data is not None:
+                        break
+
+            if handle_data is None:
                 # Check if current item is withdrawn
                 cur_item = self._id2item.get(str(cur_item_id))
                 if cur_item['withdrawn']:
@@ -605,7 +759,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                     self._versions["not_imported"].append(cur_item_version)
                 break
 
-            next_item_id = metadatas.versions[cur_item_version]['item_id']
+            next_item_id = handle_data['item_id']
             next_item_version = _get_version(next_item_id)
             if next_item_version in visited:
                 versions.append(next_item_version)
@@ -628,7 +782,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
         # Previous versions are in wrong order - reverse the list
         previous_versions = previous_versions[::-1]
 
-        # If this item does not have any version return a None
+        # If this item does not have any version return None
         if not newer_versions and not previous_versions:
             return None
 
@@ -642,7 +796,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
 
         return previous_versions + [cur_handle[0]] + newer_versions
 
-    def _check_sum(self, db7, db5_dspace, metadatas):
+    def _check_sum(self, env, db7, db5_dspace, metadatas):
         """
             Check if item versions importing was successful
             Select item ids from CLARIN-DSpace5 which has some version metadata
@@ -678,11 +832,38 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
             # in v5, we stored it after item installation
 
             problematic.append(uuid7)
-        if problematic:
+        endpoint = ((env or {}).get("backend", {}).get("endpoint") or "").strip()
+        base_url = ""
+        if endpoint:
+            base_url = endpoint.rstrip('/')
+            for marker in ['/repository/server/api', '/server/api']:
+                if marker in base_url:
+                    base_url = base_url.split(marker)[0].rstrip('/')
+                    break
+
+        def _item_link(uuid: str):
+            if base_url:
+                return f"{base_url}/repository/items/{uuid}"
+            return uuid
+
+        max_warn = 50
+
+        def _log_problematic_versions(title: str, uuids: list):
+            if not uuids:
+                return
+            shown = uuids[:max_warn]
+            rest = uuids[max_warn:]
             _logger.warning(
-                f'We have [{len(problematic or [])}] versions in v7 `versionitem` that are not expected!')
-            for uuid in problematic:
-                _logger.warning(f'UUID: {uuid}')
+                f"{title} Showing first [{len(shown)}] of [{len(uuids)}]. Rest is in debug log.")
+            for uuid in shown:
+                _logger.warning(f'UUID: {uuid} [{_item_link(uuid)}]')
+            for uuid in rest:
+                _logger.debug(f'UUID: {uuid} [{_item_link(uuid)}]')
+
+        _log_problematic_versions(
+            f'We have [{len(problematic or [])}] versions in v7 `versionitem` that are not expected!',
+            problematic,
+        )
 
         # Check v5
         problematic = []
@@ -696,8 +877,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                 continue
 
             problematic.append(uuid5)
-        if problematic:
-            _logger.warning(
-                f'We have [{len(problematic)}] versions in v5 not migrated into `versionitem`!')
-            for uuid in problematic:
-                _logger.warning(f'UUID: {uuid}')
+        _log_problematic_versions(
+            f'We have [{len(problematic)}] versions in v5 not migrated into `versionitem`!',
+            problematic,
+        )

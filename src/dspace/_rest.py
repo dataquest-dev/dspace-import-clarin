@@ -1,4 +1,8 @@
 import logging
+import time
+import threading
+
+import requests
 # from json import JSONDecodeError
 from ._http import response_to_json
 
@@ -6,6 +10,41 @@ _logger = logging.getLogger("dspace.rest")
 from dspace_rest_client import client  # noqa
 
 ANONYM_EMAIL = True
+
+# HTTP retry configuration
+HTTP_MAX_RETRIES = 3
+HTTP_RETRY_DELAY = 1  # seconds
+HTTP_RETRY_BACKOFF = 1.5
+HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
+HTTP_CONNECT_TIMEOUT = 10
+HTTP_READ_TIMEOUT = 120
+
+# Codes where a failed POST does NOT prove the server did no work: a 500 or a
+# proxy 502/504 can arrive after the request was fully processed and committed.
+# A 503 usually comes from a proxy that never forwarded anything, but an
+# application 503 looks identical from here - and for this endpoint a wrong
+# retry costs a silently shadowed duplicate row, while a wrong give-up costs a
+# logged, countable gap. So it is treated as ambiguous too.
+# 408/429 are rejected before the controller runs, so they stay retryable even
+# for non-idempotent endpoints.
+HTTP_AMBIGUOUS_FAILURE_CODES = [500, 502, 503, 504]
+
+
+def _may_have_reached_server(exc, post_attempted: bool) -> bool:
+    """Could this failure have left work committed on the server?
+
+        Only relevant for non-idempotent endpoints, where repeating a POST is
+        safe exactly when the first one provably never arrived.
+    """
+    if not post_attempted:
+        # raised by _maybe_reauthenticate(), before anything was sent
+        return False
+    # the connection never came up, so no bytes left the client
+    return not isinstance(exc, requests.exceptions.ConnectTimeout)
+
+# Circuit breaker for persistent errors
+HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
+HTTP_CIRCUIT_BREAKER_TIMEOUT = 60  # seconds before retry
 
 
 def ascii(s, default="unknown"):
@@ -28,6 +67,18 @@ def progress_bar(arr):
     return tqdm(arr, mininterval=mininterval, maxinterval=2 * mininterval)
 
 
+def sanitize_log_content(content, max_length=200):
+    """Sanitize content for logging to prevent log injection."""
+    if not content:
+        return "No content"
+    # Convert to string and limit length
+    sanitized = str(content)[:max_length]
+    # Remove/replace potentially dangerous characters for log injection
+    sanitized = sanitized.replace('\n', '\\n').replace(
+        '\r', '\\r').replace('\t', '\\t')
+    return sanitized
+
+
 class rest:
     """
         Serves as proxy to Dspace REST API.
@@ -35,12 +86,30 @@ class rest:
         original python rest api by dspace developers
     """
 
-    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True):
-        _logger.info(f"Initialise connection to DSpace REST backend [{endpoint}]")
+    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
+                 reauth_minutes: int = 20, bitstream_read_timeout: int = 3600,
+                 bitstream_import_url: str = 'clarin/import/core/bitstream'):
+        thread = threading.current_thread()
+        _logger.debug(
+            f"Initialise connection to DSpace REST backend [{endpoint}] "
+            f"thread:[{thread.name}] id:[{thread.ident}]"
+        )
 
         self._acceptable_resp = []
         self._get_cnt = 0
         self._post_cnt = 0
+        self._user = user
+        self._password = password
+        self._auth = auth
+        self._reauth_minutes = reauth_minutes
+        self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
+        self._bitstream_read_timeout = bitstream_read_timeout
+        self._bitstream_import_url = bitstream_import_url
+        self._last_auth_ts = 0.0
+
+        # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
+        self._consecutive_500_errors = 0
+        self._circuit_breaker_open_time = None
 
         client.check_response = lambda x, y: self._resp_check(x, y)
         self._response_map = {
@@ -52,12 +121,36 @@ class rest:
 
         self.client = client.DSpaceClient(
             api_endpoint=endpoint, username=user, password=password)
+        # Install a default per-request timeout on the underlying
+        # requests.Session. The pinned submodule libs/dspace-rest-python
+        # (api_post(url, params, json, retry=False) etc.) has no `timeout`
+        # kwarg and no **kwargs passthrough, so we cannot pass timeouts from
+        # the caller side without a TypeError. Wrapping `session.request`
+        # gives us the hardening behavior (no infinite hangs) uniformly for
+        # GET/POST/PUT/DELETE without modifying the submodule.
+        _orig_request = self.client.session.request
+
+        def _request_with_default_timeout(method, url, **kwargs):
+            kwargs.setdefault("timeout", self._timeout_for(url))
+            return _orig_request(method, url, **kwargs)
+
+        self.client.session.request = _request_with_default_timeout
         if auth:
             if not self.client.authenticate():
-                _logger.error(f'Error auth to dspace REST API at [{endpoint}]!')
+                _logger.error(
+                    f"Error auth to dspace REST API at [{endpoint}] "
+                    f"thread:[{thread.name}] id:[{thread.ident}]!"
+                )
                 raise ConnectionError("Cannot connect to dspace!")
-            _logger.debug(f"Successfully logged in to [{endpoint}]")
-        _logger.info(f"DSpace REST backend is available at [{endpoint}]")
+            self._last_auth_ts = time.time()
+            _logger.debug(
+                f"Successfully logged in to [{endpoint}] "
+                f"thread:[{thread.name}] id:[{thread.ident}]"
+            )
+        _logger.debug(
+            f"DSpace REST backend is available at [{endpoint}] "
+            f"thread:[{thread.name}] id:[{thread.ident}]"
+        )
         self.endpoint = endpoint.rstrip("/")
 
     # =======
@@ -69,6 +162,25 @@ class rest:
     @property
     def post_cnt(self):
         return self._post_cnt
+
+    def spawn_worker_client(self):
+        return rest(
+            self.endpoint,
+            self._user,
+            self._password,
+            self._auth,
+            self._reauth_minutes,
+            self._bitstream_read_timeout,
+            self._bitstream_import_url,
+        )
+
+    def verify_authentication(self, force: bool = True):
+        """Validate backend login/token before critical operations."""
+        ok = self._maybe_reauthenticate(force=force)
+        if not ok:
+            raise ConnectionError(
+                f"Cannot authenticate to DSpace backend [{self.endpoint}]")
+        return True
 
     # =======
 
@@ -82,7 +194,7 @@ class rest:
 
     def clarin_put_handles(self, handle_arr: list):
         """
-            Import handles which have not objects into database.
+            Import handles which have no objects into database.
             Other handles are imported by dspace objects.
             Mapped table: handles
         """
@@ -110,7 +222,7 @@ class rest:
 
     def fetch_metadata_schemas(self):
         """
-            Gel all existing data from table metadataschemaregistry.
+            Get all existing data from table metadataschemaregistry.
         """
         url = 'core/metadataschemas'
         arr = self._fetch(url, self.get_many, None)
@@ -135,7 +247,7 @@ class rest:
 
     def fetch_schema(self, object_id):
         """
-            Gel all existing data from table metadataschemaregistry.
+            Get all existing data from table metadataschemaregistry.
         """
         url = 'core/metadataschemas'
         return self._fetch(url, self.get_one, None, object_id=object_id)
@@ -180,7 +292,7 @@ class rest:
 
     def put_collection_submitter(self, col_id: int):
         url = f'core/collections/{col_id}/submittersGroup'
-        _logger.debug(f"Adding editor group to [{col_id}] using [{url}]")
+        _logger.debug(f"Adding submitter group to [{col_id}] using [{url}]")
         return list(self._iput(url, [{}], [{}]))[0]
 
     def put_collection_bitstream_read_group(self, col_id: int):
@@ -313,16 +425,33 @@ class rest:
             on imported bitstreams that haven't already their checksum
             calculated.
         """
-        url = 'clarin/import/core/bitstream/checksum'
+        url = f'{self._bitstream_import_url}/checksum'
         _logger.debug(f"Checksums using [{url}]")
         r = self.post(url)
         if not r.ok:
             raise Exception(r)
 
+    def _timeout_for(self, url):
+        """(connect, read) timeout for one request.
+
+            The bitstream import endpoints re-read the whole file server-side to
+            recompute its MD5 before answering, which takes minutes for multi-GB
+            files - the generic read timeout would make the client give up while
+            the server is still working, and the server commits anyway. Substring
+            match, so it also covers `.../bitstream/checksum`.
+        """
+        if self._bitstream_import_url in str(url):
+            return (HTTP_CONNECT_TIMEOUT, self._bitstream_read_timeout)
+        return (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
+
     def put_bitstream(self, param: dict, data: dict):
-        url = 'clarin/import/core/bitstream'
+        url = self._bitstream_import_url
         _logger.debug(f"Importing [][{param}] using [{url}]")
-        return list(self._iput(url, [data], [param]))[0]
+        # Not idempotent: the server adds the bitstream to the bundle and
+        # commits even when the client has already given up, so a repeated POST
+        # creates a second bundle2bitstream row with a colliding bitstream_order
+        # and shadows a file.
+        return list(self._iput(url, [data], [param], allow_transient_retry=False))[0]
 
     def put_com_logo(self, param: dict):
         url = 'clarin/import/logo/community'
@@ -432,8 +561,20 @@ class rest:
 
     def put_item(self, param: dict, data: dict):
         url = 'clarin/import/item'
+        item_info = ""
+        if 'uuid' in (data or {}):
+            item_info = f" UUID: {data.get('uuid', 'unknown')}"
+        elif 'id' in (param or {}):
+            item_info = f" ID: {param.get('id', 'unknown')}"
+
+        _logger.debug(f"Importing item{item_info}")
         _logger.debug(f"Importing [][{param}] using [{url}]")
-        return list(self._iput(url, [data], [param]))[0]
+        result = list(self._iput(url, [data], [param]))[0]
+
+        if result is None:
+            _logger.error(f"Failed to import item{item_info}")
+
+        return result
 
     def put_item_to_col(self, item_uuid: str, data: list):
         url = f'clarin/import/item/{item_uuid}/mappedCollections'
@@ -490,44 +631,192 @@ class rest:
         return None
 
     def _put(self, url: str, arr: list, params: list = None):
-        return len(list(self._iput(url, arr, params)))
+        list(self._iput(url, arr, params))
+        return len(arr)
 
-    def _iput(self, url: str, arr: list, params=None):
+    def _iput(self, url: str, arr: list, params=None, allow_transient_retry: bool = True):
         _logger.debug(f"Importing {len(arr)} using [{url}]")
         if params is not None:
             assert len(params) == len(arr)
 
         for i, data in enumerate(progress_bar(arr)):
-            try:
-                param = params[i] if params is not None else None
-                r = self.post(url, params=param, data=data)
-                if not r.ok:
-                    raise Exception(r)
-                try:
-                    js = None
-                    if len(r.content or '') > 0:
-                        js = response_to_json(r)
-                    yield js
-                except Exception:
-                    yield r
-            except Exception as e:
-                ascii_data = ascii(data)
-                if ANONYM_EMAIL:
-                    # poor man's anonymize
-                    if "@" in ascii_data or "email" in ascii_data:
-                        ascii_data = ascii_data[:5]
-                if len(ascii_data) > 80:
-                    ascii_data = f"{ascii_data[:70]}..."
-                msg_r = ""
-                try:
-                    msg_r = str(r)
-                except Exception:
-                    pass
-
-                msg = f'POST [{url}] for [{ascii_data}] failed. Exception: [{str(e)}][{msg_r}]'
-                _logger.error(msg)
-                yield None
+            param = params[i] if params is not None else None
+            result = self._post_with_retry(
+                url, data, param, i, len(arr),
+                allow_transient_retry=allow_transient_retry)
+            yield result
         _logger.debug(f"Imported [{url}] successfully")
+
+    def _post_with_retry(self, url: str, data, param, item_index: int, total_items: int,
+                         allow_transient_retry: bool = True):
+        """POST with retry logic for handling temporary server errors
+
+            Pass allow_transient_retry=False for endpoints that are not
+            idempotent. A read timeout, a dropped connection or an ambiguous 5xx
+            does not prove the server did no work, so repeating the POST can
+            commit the same object twice. Auth (401/403) and rate-limit
+            (408/429) retries stay enabled - those are rejected before the
+            request does any work.
+        """
+
+        # Check if circuit breaker is blocking requests due to consecutive errors
+        if self._is_circuit_breaker_open():
+            _logger.warning(
+                f"Circuit breaker open - skipping request to [{url}] (too many consecutive 500 errors)")
+            return None
+
+        ascii_data = ascii(data)
+        if ANONYM_EMAIL:
+            # Truncate data containing email addresses for privacy in logs
+            if "@" in ascii_data or "email" in ascii_data:
+                ascii_data = ascii_data[:5]
+        if len(ascii_data) > 80:
+            ascii_data = f"{ascii_data[:70]}..."
+
+        last_exception = None
+        last_response = None
+        attempts_made = 0
+
+        for attempt in range(HTTP_MAX_RETRIES):
+            attempts_made = attempt + 1
+            post_attempted = False
+            try:
+                self._maybe_reauthenticate()
+                post_attempted = True
+                r = self.post(url, params=param, data=data)
+
+                if r.ok:
+                    # Success - reset circuit breaker and return parsed response
+                    self._handle_circuit_breaker(r.status_code)
+                    try:
+                        js = None
+                        content_len = len(r.content or '')
+                        if content_len > 0:
+                            js = response_to_json(r)
+                        else:
+                            if self._bitstream_import_url in str(url):
+                                _logger.warning(
+                                    f"POST [{url}] returned HTTP {r.status_code} with empty body; "
+                                    f"bitstream importer expects JSON with id. params=[{param}]"
+                                )
+                        if attempt > 0:
+                            _logger.debug(
+                                f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
+                        return js
+                    except Exception:
+                        return r
+
+                # Handle auth errors (recoverable via re-auth)
+                elif r.status_code in [401, 403]:
+                    last_response = r
+                    if attempt == HTTP_MAX_RETRIES - 1:
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
+                        break
+
+                    _logger.warning(
+                        f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - re-authenticating")
+                    if not self._maybe_reauthenticate(force=True):
+                        _logger.warning("Re-authentication failed")
+                        break
+                    continue
+
+                # Handle HTTP errors
+                elif r.status_code in HTTP_RETRYABLE_CODES:
+                    last_response = r
+                    self._handle_circuit_breaker(r.status_code)
+                    if not allow_transient_retry and r.status_code in HTTP_AMBIGUOUS_FAILURE_CODES:
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}) - not "
+                            f"retried, endpoint is not idempotent and the server may have committed")
+                        break
+                    retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
+
+                    if attempt == HTTP_MAX_RETRIES - 1:
+                        # Last attempt - no retry will happen
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
+                    elif attempt == 0:
+                        # First attempt - log with retry info
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - retrying in {retry_delay}s")
+                    else:
+                        _logger.debug(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES})")
+
+                    if attempt < HTTP_MAX_RETRIES - 1:
+                        time.sleep(retry_delay)
+
+                        # Re-authenticate on certain errors
+                        if r.status_code in [401, 403]:
+                            _logger.debug("Re-authenticating due to auth error")
+                            if not self.client.authenticate():
+                                _logger.warning("Re-authentication failed")
+                                break
+                        continue
+                else:
+                    # Non-retryable error
+                    last_response = r
+                    _logger.error(
+                        f"[FAILED] POST [{url}] failed with non-retryable HTTP {r.status_code} for [{ascii_data}]: {r.text}")
+                    return None
+
+            except Exception as e:
+                last_exception = e
+                if not allow_transient_retry and _may_have_reached_server(e, post_attempted):
+                    _logger.warning(
+                        f"POST [{url}] exception (attempt {attempt + 1}) - not retried, "
+                        f"endpoint is not idempotent and the request may have arrived: {str(e)}")
+                    break
+                retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
+
+                if attempt == 0 or attempt == HTTP_MAX_RETRIES - 1:
+                    _logger.warning(
+                        f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
+                else:
+                    _logger.debug(
+                        f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
+
+                if attempt < HTTP_MAX_RETRIES - 1:
+                    time.sleep(retry_delay)
+                    continue
+
+        # All retries exhausted
+        msg_r = ""
+        try:
+            msg_r = str(last_response) if last_response else ""
+        except Exception:
+            pass
+
+        # Provide detailed error information with sanitized content
+
+        if last_response:
+            status_code = getattr(last_response, 'status_code', 'Unknown')
+            if hasattr(last_response, 'text'):
+                error_text = sanitize_log_content(last_response.text)
+                error_detail = f"HTTP {status_code}: {error_text}"
+            else:
+                error_detail = f"HTTP {status_code}: No response text"
+        else:
+            error_detail = sanitize_log_content(
+                str(last_exception) if last_exception else "Unknown error")
+
+        msg = f"POST [{url}] for [{ascii_data}] failed after {attempts_made} attempts. Final error: {error_detail}"
+        _logger.error(msg)
+        return None
+
+    def _maybe_reauthenticate(self, force: bool = False):
+        if not force:
+            if self._reauth_seconds <= 0:
+                return True
+            if self._last_auth_ts > 0 and (time.time() - self._last_auth_ts) < self._reauth_seconds:
+                return True
+
+        _logger.debug("Refreshing backend authentication token")
+        ok = self.client.authenticate()
+        if ok:
+            self._last_auth_ts = time.time()
+        return ok
 
     # =======
 
@@ -547,7 +836,41 @@ class rest:
     def post(self, command: str, params=None, data=None):
         url = self.endpoint + '/' + command
         self._post_cnt += 1
+        # NOTE: pinned submodule's api_post(url, params, json, retry=False)
+        # does not accept `timeout`. The default timeout is installed at
+        # session level in __init__ (see _request_with_default_timeout).
         return self.client.api_post(url, params or {}, data or {})
+
+    def _is_circuit_breaker_open(self):
+        """Check if circuit breaker is open due to too many consecutive failures"""
+        if self._circuit_breaker_open_time is None:
+            return False
+
+        # Check if timeout period has passed
+        if time.time() - self._circuit_breaker_open_time > HTTP_CIRCUIT_BREAKER_TIMEOUT:
+            _logger.info("Circuit breaker timeout expired - attempting to close circuit")
+            self._circuit_breaker_open_time = None
+            self._consecutive_500_errors = 0
+            return False
+
+        return True
+
+    def _handle_circuit_breaker(self, status_code):
+        """Update circuit breaker state based on response"""
+        if status_code == 500:
+            self._consecutive_500_errors += 1
+            if self._consecutive_500_errors >= HTTP_CIRCUIT_BREAKER_THRESHOLD:
+                if self._circuit_breaker_open_time is None:
+                    self._circuit_breaker_open_time = time.time()
+                    _logger.error(
+                        f"Circuit breaker OPENED - {self._consecutive_500_errors} consecutive 500 errors. Will retry in {HTTP_CIRCUIT_BREAKER_TIMEOUT}s")
+        else:
+            # Reset on any non-500 response
+            if self._consecutive_500_errors > 0:
+                _logger.info(
+                    f"Circuit breaker reset - got non-500 response after {self._consecutive_500_errors} errors")
+            self._consecutive_500_errors = 0
+            self._circuit_breaker_open_time = None
 
     # =======
 
