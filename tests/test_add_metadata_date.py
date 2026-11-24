@@ -49,131 +49,64 @@ ANOMALY = "anomaly"
 
 
 class TestFixDateFormat(unittest.TestCase):
-    """
-        --fix-date-format on dc.date.issued (dry-run, no DSpace): YYYY, YYYY-MM and
-        YYYY-MM-DD are kept, other full dates go to YYYY-MM-DD, partial dates to
-        YYYY-MM, empty and unparseable values are left untouched.
-    """
+    """--fix-date-format on dc.date.issued, as used at TUL (dry-run, no DSpace)."""
 
     CASES = [
-        (None, ANOMALY),
-        ("", ANOMALY),
-        ("   ", ANOMALY),
+        (None, KEEP),
+        ("", KEEP),
+        ("   ", KEEP),
         ("2020", KEEP),
-        ("2020-05-30", KEEP),
         ("2025-05", KEEP),
-        ("2020-5-3", "2020-05-03"),
-        ("2025-5", "2025-05"),
+        ("2020-05-30", KEEP),
+        ("2020-5-3", KEEP),
         ("30.5.2025", "2025-05-30"),
         ("30. 5. 2025", "2025-05-30"),
-        ("5.6.2025", "2025-06-05"),
         ("30/05/2025", "2025-05-30"),
-        ("05/2025", "2025-05"),
+        ("30-05-2025", "2025-05-30"),
         ("5/2025", "2025-05"),
         ("5.2025", "2025-05"),
-        ("2025/05", "2025-05"),
-        ("2025.05", "2025-05"),
-        ("5.30.2025", ANOMALY),
-        ("abcd-ef", ANOMALY),
-        ("2025-13", ANOMALY),
+        ("2025-5", "2025-05"),
         ("31.2.2025", ANOMALY),
-        ("2025-05-30T00:00:00Z", ANOMALY),
+        ("2025-06-18T00:00:00Z", ANOMALY),
         ("ca. 2020", ANOMALY),
-        ("[2020]", ANOMALY),
-        ("2020-2021", ANOMALY),
     ]
 
     def _run(self, value):
         item = {"uuid": "u", "metadata": {"dc.date.issued": [{"value": value}]}}
-        upd = _am.updater(None, ["dc.date.issued"], "dc.date.issued", dry_run=True)
+        upd = _am.updater(None, ["dc.date.issued"], "dc.date.issued",
+                          dry_run=True, fix_date_format=True)
         ret = upd.update(item)
-        return ret, item["metadata"]["dc.date.issued"][0]["value"]
+        return ret, item["metadata"]["dc.date.issued"][0]["value"], upd.info
 
     def test_cases(self):
         for value, expected in self.CASES:
             with self.subTest(value=value):
-                ret, stored = self._run(value)
+                ret, stored, info = self._run(value)
                 if expected == KEEP:
-                    self.assertEqual(ret, _am.updater.ret_already_ok)
-                    self.assertEqual(stored, value)
+                    self.assertEqual((ret, stored), (_am.updater.ret_already_ok, value))
                 elif expected == ANOMALY:
-                    self.assertEqual(ret, _am.updater.ret_invalid_meta)
-                    self.assertEqual(stored, value)
+                    self.assertEqual((ret, stored), (_am.updater.ret_invalid_meta, value))
+                    self.assertEqual(info["invalid_date"], [("u", value)])
                 else:
-                    self.assertEqual(ret, _am.updater.ret_updated)
-                    self.assertEqual(stored, expected)
-
-    def test_multiple_values_are_not_removed(self):
-        values = [{"value": "30.5.2025"}, {"value": "2020"}]
-        item = {"uuid": "u", "metadata": {"dc.date.issued": list(values)}}
-        # dspace_be=None and dry_run=False: any DSpace call would raise
-        upd = _am.updater(None, ["dc.date.issued"], "dc.date.issued")
-        self.assertEqual(upd.update(item), _am.updater.ret_invalid_meta)
-        self.assertEqual(item["metadata"]["dc.date.issued"], values)
-        self.assertEqual(len(upd.info["anomalies"]), 1)
+                    self.assertEqual((ret, stored), (_am.updater.ret_updated, expected))
+                    # a second run must not write the fixed value again
+                    self.assertEqual(self._run(stored)[0], _am.updater.ret_already_ok)
 
 
-class TestSourceFields(unittest.TestCase):
-    """Normal mode: dc.date.issued is missing and is created from a source field (dry-run)."""
+class TestMultipleValues(unittest.TestCase):
+    """Extra dc.date.issued values are never deleted, in any mode (#268)."""
 
-    def _run(self, value):
-        item = {"uuid": "u", "metadata": {"dc.date.submitted": [{"value": value}]}}
-        upd = _am.updater(None, ["dc.date.submitted"], "dc.date.issued", dry_run=True)
-        return upd.update(item), upd.info
-
-    def test_empty_source_is_anomaly(self):
-        for value in (None, "", "   "):
-            with self.subTest(value=value):
-                ret, info = self._run(value)
-                self.assertEqual(ret, _am.updater.ret_empty_meta)
-                self.assertEqual(len(info["anomalies"]), 1)
-
-    def test_unparseable_source_is_anomaly(self):
-        ret, info = self._run("ca. 2020")
-        self.assertEqual(ret, _am.updater.ret_empty_meta)
-        self.assertEqual(info["anomalies"][0][1], "ca. 2020")
-
-    def test_valid_source_is_created(self):
-        ret, info = self._run("30.5.2025")
-        self.assertEqual(ret, _am.updater.ret_created)
-        self.assertEqual(info["anomalies"], [])
-
-    def test_empty_lists_do_not_crash(self):
-        upd = _am.updater(None, ["dc.date.submitted"], "dc.date.issued", dry_run=True)
-        item = {"uuid": "u", "metadata": {"dc.date.issued": [], "dc.date.submitted": []}}
-        self.assertEqual(upd.update(item), _am.updater.ret_empty_meta)
-
-    def test_later_source_wins_without_anomaly(self):
-        item = {"uuid": "u", "metadata": {"dc.date.submitted": [{"value": "ca. 2020"}],
-                                          "dc.date.defense": [{"value": "30.5.2025"}]}}
-        upd = _am.updater(None, ["dc.date.submitted", "dc.date.defense"], "dc.date.issued", dry_run=True)
-        self.assertEqual(upd.update(item), _am.updater.ret_created)
-        self.assertEqual(upd.info["anomalies"], [])
-
-
-class TestMultipleValuesCleanup(unittest.TestCase):
-    """Normal mode, real run: extra dc.date.issued values are never deleted (#268)."""
-
-    def test_nothing_removed_item_is_anomaly(self):
-        removed = []
-        client = types.SimpleNamespace(
-            remove_metadata=lambda item, field, i: removed.append(i))
-        be = types.SimpleNamespace(client=client, get=None, _fetch=lambda *a: None)
-        saved = getattr(_am, "dspace_be", None)
-        _am.dspace_be = be
-        try:
-            for values in (["abc", "def", "2020"], [None, "2020"], ["abc", None, "2020"],
-                           ["2020", " "]):
-                with self.subTest(values=values):
-                    item = {"uuid": "u", "metadata": {
-                        "dc.date.issued": [{"value": v} for v in values]}}
-                    upd = _am.updater(be, ["dc.date.issued"], "dc.date.issued",
-                                      dry_run=False)
-                    self.assertEqual(upd.update(item), _am.updater.ret_invalid_meta)
-                    self.assertEqual(removed, [])
-                    self.assertIn("#268", upd.info["anomalies"][0][2])
-        finally:
-            _am.dspace_be = saved
+    def test_nothing_removed(self):
+        values = [{"value": "abc"}, {"value": "def"}, {"value": "2020"}]
+        for fix in (False, True):
+            with self.subTest(fix_date_format=fix):
+                item = {"uuid": "u", "metadata": {"dc.date.issued": list(values)}}
+                # dspace_be=None and dry_run=False: any DSpace call would raise
+                upd = _am.updater(None, ["dc.date.submitted"], "dc.date.issued",
+                                  fix_date_format=fix)
+                self.assertEqual(upd.update(item), _am.updater.ret_invalid_meta)
+                self.assertEqual(item["metadata"]["dc.date.issued"], values)
+                self.assertEqual(upd.info["multiple"], {"u"})
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ Dry run:
 python add_metadata.py --dry-run --endpoint="http://dev-5.pc:86/server/api/" --to_mtd_field dc.date.issued --from_mtd_field dc.date.submitted dc.date.committed dc.date.defense dc.date
 ```
 
+Items with more than one `dc.date.issued` value are never changed, only reported (`multiple`).
+
 ## TUL fix date format in dc.date.issued
 
 ```
@@ -16,13 +18,7 @@ set ENVFILE=.env-tul
 python add_metadata.py --fix-date-format --endpoint="https://dspace.tul.cz/server/api/" --dry-run
 ```
 
-Date rules (used by all modes):
-- `YYYY-MM-DD`, `YYYY-MM` and `YYYY` are kept as-is (e.g. `2020` stays `2020`)
-- Full dates are converted to `YYYY-MM-DD` (e.g. `30.5.2025` → `2025-05-30`, `2020-5-3` → `2020-05-03`)
-- Partial dates are converted to `YYYY-MM` (e.g. `5/2025` → `2025-05`)
-- Empty and unparseable values are not changed, they are reported as anomalies
-- No mode deletes values: items with more `dc.date.issued` values are not changed, they are reported as anomalies for manual review (#268)
-- In the normal mode, empty or unparseable source fields are reported as anomalies only if no source field gives a value. Every unparseable source value is listed in `invalid_date_all`
+`YYYY-MM-DD`, `YYYY-MM`, `YYYY` and empty values are kept, full dates become `YYYY-MM-DD` (`30.5.2025` → `2025-05-30`), partial dates become `YYYY-MM` (`5/2025` → `2025-05`), other values are only reported (`invalid_date`).
 
 ## TUL update dc.date.issued
 
