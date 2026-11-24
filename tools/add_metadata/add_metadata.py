@@ -277,7 +277,7 @@ class updater:
             if len(date_meta) != 1:
                 _logger.critical(f"{uuid}: other than one value {date_meta}")
                 self._info["multiple"].add(uuid)
-                # Never delete extra values, the old cleanup removed wrong ones (#268)
+                # Never delete extra values, the old cleanup removed wrong ones
                 return updater.ret_invalid_meta
 
             # force change of metadata

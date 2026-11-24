@@ -94,7 +94,7 @@ class TestFixDateFormat(unittest.TestCase):
 
 
 class TestMultipleValues(unittest.TestCase):
-    """Extra dc.date.issued values are never deleted, in any mode (#268)."""
+    """Extra dc.date.issued values are never deleted, in any mode."""
 
     def test_nothing_removed(self):
         values = [{"value": "abc"}, {"value": "def"}, {"value": "2020"}]
