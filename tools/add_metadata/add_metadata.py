@@ -107,6 +107,32 @@ class date:
         _logger.warning(f"Error converting [{self._d}] to date.")
         return False
 
+    @staticmethod
+    def is_year_or_month(date_str: str) -> bool:
+        """'YYYY' and 'YYYY-MM' are kept as-is by --fix-date-format."""
+        for fmt, length in (('%Y', 4), ('%Y-%m', 7)):
+            if len(date_str) == length:
+                try:
+                    datetime.strptime(date_str, fmt)
+                    return True
+                except ValueError:
+                    return False
+        return False
+
+    def parse_fix_format(self) -> bool:
+        """--fix-date-format: full dates -> 'YYYY-MM-DD', partial dates -> 'YYYY-MM'."""
+        full = ['%Y/%m/%d', '%d/%m/%Y', '%Y.%m.%d', '%d.%m.%Y', '%d-%m-%Y', '%d. %m. %Y']
+        partial = ['%Y-%m', '%m-%Y', '%Y/%m', '%m/%Y', '%Y.%m', '%m.%Y']
+        for formats, out_fmt in ((full, '%Y-%m-%d'), (partial, '%Y-%m')):
+            for fmt in formats:
+                try:
+                    self._d = datetime.strptime(self._d, fmt).strftime(out_fmt)
+                    return True
+                except ValueError:
+                    continue
+        _logger.warning(f"Error converting [{self._d}] to date.")
+        return False
+
 
 def update_item(item_d: dict):
     item = Item(item_d)
@@ -129,11 +155,13 @@ class updater:
     ret_invalid_meta = 4
     ret_empty_meta = 4
 
-    def __init__(self, dspace_be, from_mtd_fields: list, to_mtd_field: list, dry_run: bool = False):
+    def __init__(self, dspace_be, from_mtd_fields: list, to_mtd_field: list, dry_run: bool = False,
+                 fix_date_format: bool = False):
         self._dspace_be = dspace_be
         self._from_mtd_fields = from_mtd_fields
         self._to_mtd_field = to_mtd_field
         self._dry_run = dry_run
+        self._fix_date_format = fix_date_format
         self._info = {
             "valid": [],
             "multiple": set(),
@@ -185,11 +213,15 @@ class updater:
         # If there is more than one value, get only the first one
         date_val = date(date_str)
         if not force:
-            if date_val.is_valid():
+            if self._fix_date_format and not (date_str or "").strip():
+                _logger.warning(f"{id_str}: empty value [{date_str}] kept as-is")
+                return updater.ret_already_ok
+
+            if (self._fix_date_format and date.is_year_or_month(date_str)) or date_val.is_valid():
                 self._info["valid"].append((uuid, date_val.input))
                 return updater.ret_already_ok
 
-            parsed_ok = date_val.parse()
+            parsed_ok = date_val.parse_fix_format() if self._fix_date_format else date_val.parse()
             if parsed_ok is False:
                 _logger.error(f"{id_str}: cannot convert [{date_val.input}] to date")
                 self._info["invalid_date"].append((uuid, date_val.input))
@@ -245,21 +277,8 @@ class updater:
             if len(date_meta) != 1:
                 _logger.critical(f"{uuid}: other than one value {date_meta}")
                 self._info["multiple"].add(uuid)
-                if not self._dry_run:
-                    val = ''
-                    for i in range(len(date_meta)):
-                        if len(val) == 0:
-                            date_val = date(date_meta[i]["value"])
-                            if date_val.is_valid() or date_val.parse():
-                                val = date_val.value
-                                continue
-                        if val == '' and i == len(date_meta) - 1:
-                            val = date_meta[i]["value"]
-                            continue
-                        dspace_be.client.remove_metadata(
-                            Item(item), self._to_mtd_field, i)
-                    # Reload item and metadata
-                    item = dspace_be._fetch(f'core/items/{uuid}', dspace_be.get, None)
+                # Never delete extra values, the old cleanup removed wrong ones (#268)
+                return updater.ret_invalid_meta
 
             # force change of metadata
             if force:
@@ -312,10 +331,12 @@ class additional_stats:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Add metadata for DSpace items")
     parser.add_argument("--to_mtd_field",
-                        type=str, required=True, help="Metadata field to be created.")
+                        type=str, help="Metadata field to be created.")
     parser.add_argument("--from_mtd_field",
-                        type=str, nargs='+', required=True,
+                        type=str, nargs='+',
                         help="Metadata field(s) from which value(s) can be used.")
+    parser.add_argument("--fix-date-format", action='store_true', default=False,
+                        help="Only fix the format of dc.date.issued (no other fields needed).")
     parser.add_argument("--endpoint", type=str, default=env["backend"]["endpoint"])
     parser.add_argument("--user", type=str, default=env["backend"]["user"])
     parser.add_argument("--password", type=str, default=env["backend"]["password"])
@@ -323,6 +344,15 @@ if __name__ == '__main__':
     parser.add_argument("--result-every-N", type=int, default=10000)
     parser.add_argument("--only", type=str, default=None)
     args = parser.parse_args()
+    if args.fix_date_format:
+        if args.only is not None:
+            # --only forces the normal-mode date rules, see find_correct_metadata
+            parser.error("--only cannot be used with --fix-date-format")
+        args.to_mtd_field = "dc.date.issued"
+        args.from_mtd_field = ["dc.date.issued"]
+    elif args.to_mtd_field is None or args.from_mtd_field is None:
+        parser.error("--to_mtd_field and --from_mtd_field are required "
+                     "unless --fix-date-format is used")
     # output args from parse_args but without passwords
     args_dict = vars(args).copy()
     args_dict.pop("password", None)
@@ -341,7 +371,8 @@ if __name__ == '__main__':
     # Initialize DSpace backend
     dspace_be = dspace.rest(endpoint, user, password, True)
 
-    upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field, dry_run=args.dry_run)
+    upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field, dry_run=args.dry_run,
+                  fix_date_format=args.fix_date_format)
 
     stats = additional_stats()
 
