@@ -107,7 +107,7 @@ class TestFixDateFormat(unittest.TestCase):
         values = [{"value": "30.5.2025"}, {"value": "2020"}]
         item = {"uuid": "u", "metadata": {"dc.date.issued": list(values)}}
         # dspace_be=None and dry_run=False: any DSpace call would raise
-        upd = _am.updater(None, ["dc.date.issued"], "dc.date.issued", remove_extra_values=False)
+        upd = _am.updater(None, ["dc.date.issued"], "dc.date.issued")
         self.assertEqual(upd.update(item), _am.updater.ret_invalid_meta)
         self.assertEqual(item["metadata"]["dc.date.issued"], values)
         self.assertEqual(len(upd.info["anomalies"]), 1)
@@ -152,21 +152,26 @@ class TestSourceFields(unittest.TestCase):
 
 
 class TestMultipleValuesCleanup(unittest.TestCase):
-    """Normal mode, real run: the cleanup of extra values must not crash on null values."""
+    """Normal mode, real run: extra dc.date.issued values are never deleted (#268)."""
 
-    def test_null_value_is_anomaly_and_nothing_removed(self):
+    def test_nothing_removed_item_is_anomaly(self):
         removed = []
-        client = types.SimpleNamespace(remove_metadata=lambda item, field, i: removed.append(i))
+        client = types.SimpleNamespace(
+            remove_metadata=lambda item, field, i: removed.append(i))
         be = types.SimpleNamespace(client=client, get=None, _fetch=lambda *a: None)
         saved = getattr(_am, "dspace_be", None)
         _am.dspace_be = be
         try:
-            for values in ([None, "2020"], ["abc", None, "2020"], ["2020", " "]):
+            for values in (["abc", "def", "2020"], [None, "2020"], ["abc", None, "2020"],
+                           ["2020", " "]):
                 with self.subTest(values=values):
-                    item = {"uuid": "u", "metadata": {"dc.date.issued": [{"value": v} for v in values]}}
-                    ret = _am.updater(be, ["dc.date.issued"], "dc.date.issued").update(item)
-                    self.assertEqual(ret, _am.updater.ret_invalid_meta)
+                    item = {"uuid": "u", "metadata": {
+                        "dc.date.issued": [{"value": v} for v in values]}}
+                    upd = _am.updater(be, ["dc.date.issued"], "dc.date.issued",
+                                      dry_run=False)
+                    self.assertEqual(upd.update(item), _am.updater.ret_invalid_meta)
                     self.assertEqual(removed, [])
+                    self.assertIn("#268", upd.info["anomalies"][0][2])
         finally:
             _am.dspace_be = saved
 

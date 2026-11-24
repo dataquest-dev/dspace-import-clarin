@@ -169,13 +169,11 @@ class updater:
     ret_invalid_meta = 4
     ret_empty_meta = 4
 
-    def __init__(self, dspace_be, from_mtd_fields: list, to_mtd_field: list, dry_run: bool = False,
-                 remove_extra_values: bool = True):
+    def __init__(self, dspace_be, from_mtd_fields: list, to_mtd_field: list, dry_run: bool = False):
         self._dspace_be = dspace_be
         self._from_mtd_fields = from_mtd_fields
         self._to_mtd_field = to_mtd_field
         self._dry_run = dry_run
-        self._remove_extra_values = remove_extra_values
         self._info = {
             "valid": [],
             "valid_year_only": [],
@@ -324,29 +322,11 @@ class updater:
                 _logger.critical(f"{uuid}: other than one value {date_meta}")
                 self._info["multiple"].add(uuid)
                 values = [x["value"] for x in date_meta]
-                # Format-only runs must not delete values, leave the item for manual review
-                if not self._remove_extra_values:
-                    self._info["anomalies"].append((uuid, values, "Multiple values"))
-                    return updater.ret_invalid_meta
-                # The cleanup below cannot handle null/blank values, do not touch such items
-                if any(v is None or v.strip() == "" for v in values):
-                    self._info["anomalies"].append((uuid, values, "Multiple values with an empty value"))
-                    return updater.ret_invalid_meta
-                if not self._dry_run:
-                    val = ''
-                    for i in range(len(date_meta)):
-                        if len(val) == 0:
-                            date_val = date(date_meta[i]["value"])
-                            if date_val.is_valid_hybrid() or date_val.parse_hybrid():
-                                val = date_val.value
-                                continue
-                        if val == '' and i == len(date_meta) - 1:
-                            val = date_meta[i]["value"]
-                            continue
-                        dspace_be.client.remove_metadata(
-                            Item(item), self._to_mtd_field, i)
-                    # Reload item and metadata
-                    item = dspace_be._fetch(f'core/items/{uuid}', dspace_be.get, None)
+                # Automatic cleanup removed values by shifting indices and could delete
+                # the valid one, see dataquest-dev/dspace-import-clarin#268.
+                self._info["anomalies"].append(
+                    (uuid, values, "Multiple values, manual review (see #268)"))
+                return updater.ret_invalid_meta
 
             # force change of metadata
             if force:
@@ -443,7 +423,7 @@ if __name__ == '__main__':
     dspace_be = dspace.rest(endpoint, user, password, True)
 
     upd = updater(dspace_be, args.from_mtd_field, args.to_mtd_field,
-                  dry_run=args.dry_run, remove_extra_values=not args.fix_date_format)
+                  dry_run=args.dry_run)
 
     stats = additional_stats()
 

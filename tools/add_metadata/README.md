@@ -21,8 +21,7 @@ Date rules (used by all modes):
 - Full dates are converted to `YYYY-MM-DD` (e.g. `30.5.2025` → `2025-05-30`, `2020-5-3` → `2020-05-03`)
 - Partial dates are converted to `YYYY-MM` (e.g. `5/2025` → `2025-05`)
 - Empty and unparseable values are not changed, they are reported as anomalies
-- `--fix-date-format` does not delete values: items with more `dc.date.issued` values are not changed, they are reported as anomalies
-- The normal mode removes extra `dc.date.issued` values, except when one of them is empty: such items are not changed, they are reported as anomalies
+- No mode deletes values: items with more `dc.date.issued` values are not changed, they are reported as anomalies for manual review (#268)
 - In the normal mode, empty or unparseable source fields are reported as anomalies only if no source field gives a value. Every unparseable source value is listed in `invalid_date_all`
 
 ## TUL update dc.date.issued
